@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Test</title>
+</head>
+<body>
+    <h1>Simple JavaScript Test</h1>
+    <div id="output">Loading...</div>
+    
+    <script>
+        document.getElementById('output').innerHTML = 'JavaScript is working!';
+        console.log('Simple test script loaded');
+        
+        // Test fetch immediately
+        fetch('/health')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('output').innerHTML = 'API works: ' + JSON.stringify(data);
+        })
+        .catch(error => {
+            document.getElementById('output').innerHTML = 'API error: ' + error.message;
+        });
+    </script>
+</body>
+</html>

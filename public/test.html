@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoView Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f0f0f0; }
+        .test-section { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; }
+        button { padding: 10px 20px; margin: 10px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        pre { background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; }
+        .error { color: #dc3545; }
+        .success { color: #28a745; }
+    </style>
+</head>
+<body>
+    <h1>AutoView API Test Page</h1>
+    
+    <div class="test-section">
+        <h2>API Connection Test</h2>
+        <button class="btn-primary" onclick="testAPI()">Test API Connection</button>
+        <button class="btn-success" onclick="testHealth()">Test Health Endpoint</button>
+        <div id="apiResult"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>JavaScript Console</h2>
+        <div id="console"></div>
+    </div>
+
+    <script>
+        // Override console.log to display on page
+        const originalLog = console.log;
+        const originalError = console.error;
+        const consoleDiv = document.getElementById('console');
+        
+        function addToConsole(message, type = 'log') {
+            const div = document.createElement('div');
+            div.className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            consoleDiv.appendChild(div);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+        
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            addToConsole(args.join(' '));
+        };
+        
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            addToConsole(args.join(' '), 'error');
+        };
+
+        async function testHealth() {
+            try {
+                console.log('Testing health endpoint...');
+                const response = await fetch('/health');
+                const data = await response.json();
+                console.log('Health check result:', data);
+                document.getElementById('apiResult').innerHTML = `<pre class="success">${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (error) {
+                console.error('Health check failed:', error);
+                document.getElementById('apiResult').innerHTML = `<pre class="error">Health check failed: ${error.message}</pre>`;
+            }
+        }
+
+        async function testAPI() {
+            try {
+                console.log('Testing /api/properties endpoint...');
+                const response = await fetch('/api/properties');
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
+                
+                const data = await response.json();
+                console.log('API response:', data);
+                
+                document.getElementById('apiResult').innerHTML = `
+                    <h3 class="success">API Test Successful!</h3>
+                    <p><strong>Status:</strong> ${response.status}</p>
+                    <p><strong>Properties found:</strong> ${data.length}</p>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                console.error('API test failed:', error);
+                document.getElementById('apiResult').innerHTML = `<pre class="error">API test failed: ${error.message}</pre>`;
+            }
+        }
+
+        // Auto-run tests on page load
+        console.log('Test page loaded successfully');
+        console.log('Current URL:', window.location.href);
+        console.log('Running auto-tests...');
+        
+        // Test health endpoint immediately
+        setTimeout(testHealth, 1000);
+        setTimeout(testAPI, 2000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoView - Property Management Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-home"></i> AutoView Dashboard</h1>
+            <p>Manage your property viewings and parties</p>
+        </header>
+
+        <div class="actions">
+            <button id="addPropertyBtn" class="btn btn-primary">
+                <i class="fas fa-plus"></i> Add New Property
+            </button>
+            <button id="refreshBtn" class="btn btn-secondary">
+                <i class="fas fa-refresh"></i> Refresh
+            </button>
+            <button id="debugBtn" class="btn btn-secondary">
+                <i class="fas fa-bug"></i> Debug API
+            </button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3 id="totalProperties">0</h3>
+                <p>Total Properties</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="activeProperties">0</h3>
+                <p>Active Properties</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="saleProperties">0</h3>
+                <p>For Sale</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="rentalProperties">0</h3>
+                <p>For Rental</p>
+            </div>
+        </div>
+
+        <div class="properties-section">
+            <h2>Properties</h2>
+            <div id="propertiesContainer">
+                <div class="loading">
+                    <i class="fas fa-spinner fa-spin"></i> Loading properties...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add/Edit Property Modal -->
+    <div id="propertyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Add New Property</h2>
+                <span class="close">&times;</span>
+            </div>
+            <form id="propertyForm">
+                <div class="form-group">
+                    <label for="address">Property Address *</label>
+                    <input type="text" id="address" name="address" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="propertyType">Property Type *</label>
+                    <select id="propertyType" name="propertyType" required>
+                        <option value="">Select type...</option>
+                        <option value="sale">For Sale</option>
+                        <option value="rental">For Rental</option>
+                    </select>
+                </div>
+
+                <div class="parties-section">
+                    <h3>Party A (Buyer/Tenant)</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="partyAName">Name</label>
+                            <input type="text" id="partyAName" name="partyAName">
+                        </div>
+                        <div class="form-group">
+                            <label for="partyAPhone">Phone *</label>
+                            <input type="tel" id="partyAPhone" name="partyAPhone" placeholder="+6581234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="partyARole">Role *</label>
+                            <select id="partyARole" name="partyARole" required>
+                                <option value="">Select role...</option>
+                                <option value="buyer">Buyer</option>
+                                <option value="tenant">Tenant</option>
+                                <option value="agent_buyer">Agent (Buyer)</option>
+                                <option value="agent_tenant">Agent (Tenant)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <h3>Party B (Seller/Landlord)</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="partyBName">Name</label>
+                            <input type="text" id="partyBName" name="partyBName">
+                        </div>
+                        <div class="form-group">
+                            <label for="partyBPhone">Phone *</label>
+                            <input type="tel" id="partyBPhone" name="partyBPhone" placeholder="+6581234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="partyBRole">Role *</label>
+                            <select id="partyBRole" name="partyBRole" required>
+                                <option value="">Select role...</option>
+                                <option value="seller">Seller</option>
+                                <option value="landlord">Landlord</option>
+                                <option value="agent_seller">Agent (Seller)</option>
+                                <option value="agent_landlord">Agent (Landlord)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="agentPhone">Agent Phone *</label>
+                    <input type="tel" id="agentPhone" name="agentPhone" value="+6581897621" required>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" id="cancelBtn" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save"></i> Save Property
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="js/xhr-utils.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

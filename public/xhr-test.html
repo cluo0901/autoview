@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XHR Test</title>
+</head>
+<body>
+    <h1>XHR API Test</h1>
+    <div id="output">Testing...</div>
+    
+    <script>
+        console.log('XHR test starting...');
+        
+        function testAPI() {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', '/health', true);
+            
+            xhr.onreadystatechange = function() {
+                console.log('ReadyState:', xhr.readyState, 'Status:', xhr.status);
+                
+                if (xhr.readyState === 4) {
+                    if (xhr.status === 200) {
+                        document.getElementById('output').innerHTML = 'SUCCESS: ' + xhr.responseText;
+                    } else {
+                        document.getElementById('output').innerHTML = 'ERROR: ' + xhr.status + ' - ' + xhr.statusText;
+                    }
+                }
+            };
+            
+            xhr.onerror = function() {
+                console.error('XHR Error occurred');
+                document.getElementById('output').innerHTML = 'XHR Error occurred';
+            };
+            
+            xhr.send();
+        }
+        
+        // Test immediately
+        testAPI();
+        
+        // Test properties endpoint after 2 seconds
+        setTimeout(function() {
+            const xhr2 = new XMLHttpRequest();
+            xhr2.open('GET', '/api/properties', true);
+            
+            xhr2.onreadystatechange = function() {
+                if (xhr2.readyState === 4) {
+                    if (xhr2.status === 200) {
+                        const properties = JSON.parse(xhr2.responseText);
+                        document.getElementById('output').innerHTML += '<br><br>PROPERTIES: ' + properties.length + ' found<br>' + JSON.stringify(properties, null, 2);
+                    } else {
+                        document.getElementById('output').innerHTML += '<br><br>PROPERTIES ERROR: ' + xhr2.status;
+                    }
+                }
+            };
+            
+            xhr2.send();
+        }, 2000);
+    </script>
+</body>
+</html>
