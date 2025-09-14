@@ -105,11 +105,18 @@ class ViewingService {
       }
 
       if (!requestedDateTime) {
-        const errorMessage = await aiService.generateResponse('clarify_datetime', { 
-          context: "User didn't specify clear date/time" 
-        });
-        
+        const errorMessage = conversationStateService.generateClarifyDateTimeTemplate();
+
         await localMessageService.sendMessage(message.from, errorMessage);
+
+        // Set conversation state to wait for clearer date/time specification
+        conversationStateService.setState(message.from,
+          conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIME,
+          {
+            propertyId: property._id,
+            needsClarification: true
+          }
+        );
         return;
       }
 
@@ -132,31 +139,44 @@ class ViewingService {
         if (nextSlot) {
           const formattedTime = calendarService.formatDateTime(nextSlot);
           
-          // Generate AI alternative time suggestion - be honest about agent availability
-          const alternativeMessage = await aiService.generateResponse('agent_unavailable_alternative', {
-            propertyAddress: property.address,
-            dateTime: calendarService.formatDateTime(requestedDateTime),
-            alternativeTime: formattedTime,
-            responseType: 'agent_unavailable_alternative',
-            context: aiAnalysis.context
-          });
-          
+          // Use templated alternative time message with clear A/B/C options
+          const alternativeMessage = conversationStateService.generateAlternativeTemplate(
+            calendarService.formatDateTime(requestedDateTime),
+            formattedTime
+          );
+
           await localMessageService.sendMessage(message.from, alternativeMessage);
-          
+
+          // Update conversation state to wait for alternative response
+          conversationStateService.setState(message.from,
+            conversationStateService.constructor.STATES.WAITING_FOR_ALTERNATIVE_RESPONSE,
+            {
+              propertyId: property._id,
+              originalDateTime: requestedDateTime,
+              alternativeDateTime: nextSlot,
+              viewingRequestId: viewingRequest._id
+            }
+          );
+
           viewingRequest.alternativeSlots.push({
             dateTime: nextSlot,
             suggestedBy: 'agent'
           });
           viewingRequest.status = 'agent_suggested_alternative';
         } else {
-          // Generate AI no availability message - be honest about agent schedule
-          const noAvailabilityMessage = await aiService.generateResponse('agent_fully_booked', {
-            propertyAddress: property.address,
-            responseType: 'agent_fully_booked',
-            context: aiAnalysis.context
-          });
-          
+          // Use templated fully booked message with clear A/B/C options
+          const noAvailabilityMessage = conversationStateService.generateAgentFullyBookedTemplate();
+
           await localMessageService.sendMessage(message.from, noAvailabilityMessage);
+
+          // Set conversation state to handle their response
+          conversationStateService.setState(message.from,
+            conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIME,
+            {
+              propertyId: property._id,
+              fullyBooked: true
+            }
+          );
         }
         
         await viewingRequest.save();
@@ -171,24 +191,30 @@ class ViewingService {
         senderInfo.propertyId);
       
       
-      // Generate AI forwarding message
-      const forwardingMessage = await aiService.generateResponse('forward_to_seller', {
-        propertyAddress: property.address,
-        dateTime: calendarService.formatDateTime(requestedDateTime),
-        recipientName: otherParty.name,
-        senderName: requesterName,
-        responseType: 'forward_to_seller'
-      });
+      // Use templated viewing request message with clear A/B/C options
+      const forwardingMessage = conversationStateService.generateViewingRequestTemplate(
+        requesterName,
+        property.address,
+        calendarService.formatDateTime(requestedDateTime)
+      );
       
-      const confirmationMessage = await aiService.generateResponse('request_forwarded', {
-        propertyAddress: property.address,
-        dateTime: calendarService.formatDateTime(requestedDateTime),
-        recipientName: otherParty.name,
-        responseType: 'request_forwarded',
-        context: aiAnalysis.context
-      });
+      const confirmationMessage = conversationStateService.generateRequestForwardedTemplate(
+        otherParty.name,
+        calendarService.formatDateTime(requestedDateTime)
+      );
       
       await localMessageService.sendMessage(otherPartyRoleId, forwardingMessage);
+
+      // Set conversation state for the other party to wait for their availability response
+      conversationStateService.setState(otherPartyRoleId,
+        conversationStateService.constructor.STATES.WAITING_FOR_AVAILABILITY,
+        {
+          propertyId: property._id,
+          requestedDateTime: requestedDateTime,
+          viewingRequestId: viewingRequest._id,
+          requesterName: requesterName
+        }
+      );
       await localMessageService.sendMessage(message.from, confirmationMessage);
 
       viewingRequest.status = 'pending_other_party';
@@ -353,30 +379,46 @@ class ViewingService {
         const requesterFinalRole = (requesterActualRole === 'buyer' || requesterActualRole === 'tenant') ? 'visitor' : 'host';
         const otherPartyFinalRole = (otherPartyActualRole === 'seller' || otherPartyActualRole === 'landlord') ? 'host' : 'visitor';
 
-        // Generate AI confirmation messages
-        const confirmationMessageToRequester = await aiService.generateResponse('final_confirmation', {
-          propertyAddress: viewingRequest.property.address,
-          dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
-          recipientName: requesterName,
-          recipientRole: requesterFinalRole,
-          otherPartyName: otherPartyName,
-          responseType: 'final_confirmation'
-        });
-        
-        const confirmationMessageToOtherParty = await aiService.generateResponse('final_confirmation', {
-          propertyAddress: viewingRequest.property.address,
-          dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
-          recipientName: otherPartyName,
-          recipientRole: otherPartyFinalRole,
-          requesterName: requesterName,
-          responseType: 'final_confirmation'
-        });
+        // Use templated confirmation messages with clear A/B options
+        const confirmationMessageToRequester = conversationStateService.generateConfirmationTemplate(
+          viewingRequest.property.address,
+          calendarService.formatDateTime(viewingRequest.requestedDateTime),
+          requesterFinalRole
+        );
+
+        const confirmationMessageToOtherParty = conversationStateService.generateConfirmationTemplate(
+          viewingRequest.property.address,
+          calendarService.formatDateTime(viewingRequest.requestedDateTime),
+          otherPartyFinalRole
+        );
         
         await localMessageService.sendMessage(requesterRoleId, confirmationMessageToRequester);
+
+        // Set conversation state for both parties to handle confirmation responses
+        conversationStateService.setState(requesterRoleId,
+          conversationStateService.constructor.STATES.WAITING_FOR_AVAILABILITY,
+          {
+            propertyId: viewingRequest.property._id,
+            requestedDateTime: viewingRequest.requestedDateTime,
+            viewingRequestId: viewingRequest._id,
+            isConfirmation: true
+          }
+        );
+
         console.log(`Confirmation sent to requester: ${requesterRoleId}`);
 
         // Also confirm to Party B
         await localMessageService.sendMessage(message.from, confirmationMessageToOtherParty);
+
+        conversationStateService.setState(message.from,
+          conversationStateService.constructor.STATES.WAITING_FOR_AVAILABILITY,
+          {
+            propertyId: viewingRequest.property._id,
+            requestedDateTime: viewingRequest.requestedDateTime,
+            viewingRequestId: viewingRequest._id,
+            isConfirmation: true
+          }
+        );
 
       } else {
         // Define the missing otherPartyName for the decline response
@@ -384,18 +426,10 @@ class ViewingService {
           ? viewingRequest.property.partyB.name 
           : viewingRequest.property.partyA.name;
           
-        // Generate AI decline response
-        const declineResponse = await aiService.generateResponse('decline_response', {
-          propertyAddress: viewingRequest.property.address,
-          dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
-          responseType: 'decline_response'
-        });
-        
-        const notifyRequesterMessage = await aiService.generateResponse('notify_decline', {
-          propertyAddress: viewingRequest.property.address,
-          dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
-          otherPartyName: otherPartyName
-        });
+        // Use templated decline response with clear A/B/C/D options
+        const declineResponse = conversationStateService.generateDeclineResponseTemplate();
+
+        const notifyRequesterMessage = conversationStateService.generateDeclineNotificationTemplate(otherPartyName);
         
         await localMessageService.sendMessage(message.from, declineResponse);
         
@@ -475,20 +509,28 @@ class ViewingService {
         viewingRequest.property.partyA.name : 
         viewingRequest.property.partyB.name;
 
-      // Generate casual message using AI
-      const casualMessage = await aiService.generateResponse('forward_to_seller', {
-        propertyAddress: viewingRequest.property.address,
-        dateTime: calendarService.formatDateTime(alternativeSlot.dateTime),
-        recipientName: otherParty.name,
-        senderName: requesterName,
-        responseType: 'forward_to_seller'
-      });
+      // Use templated alternative accepted message with clear A/B/C options
+      const casualMessage = conversationStateService.generateAlternativeAcceptedTemplate(
+        requesterName,
+        viewingRequest.property.address,
+        calendarService.formatDateTime(alternativeSlot.dateTime)
+      );
 
-      await localMessageService.sendMessage(
-        this.getOtherPartyRoleId(viewingRequest.property, 
-          viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant', 
-          viewingRequest.property._id),
-        casualMessage
+      const otherPartyRoleId = this.getOtherPartyRoleId(viewingRequest.property,
+        viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant',
+        viewingRequest.property._id);
+
+      await localMessageService.sendMessage(otherPartyRoleId, casualMessage);
+
+      // Set conversation state for the other party to wait for their confirmation
+      conversationStateService.setState(otherPartyRoleId,
+        conversationStateService.constructor.STATES.WAITING_FOR_AVAILABILITY,
+        {
+          propertyId: viewingRequest.property._id,
+          requestedDateTime: alternativeSlot.dateTime,
+          viewingRequestId: viewingRequest._id,
+          requesterName: requesterName
+        }
       );
 
       console.log(`Alternative time forwarded to Party B: ${this.getOtherPartyRoleId(viewingRequest.property, 

@@ -104,15 +104,80 @@ D) Let me suggest a specific time`;
   }
 
   generateConfirmationTemplate(propertyAddress, dateTime, recipientRole) {
-    const roleText = recipientRole === 'visitor' ? 
-      "You're all set for your viewing" : 
+    const roleText = recipientRole === 'visitor' ?
+      "You're all set for your viewing" :
       "You're scheduled to show your property";
-      
+
     return `${roleText} at ${propertyAddress} on ${dateTime}.
 
 Please reply with:
 A) Confirmed
 B) I need to reschedule`;
+  }
+
+  generateViewingRequestTemplate(requesterName, propertyAddress, dateTime) {
+    return `${requesterName} wants to view your property at ${propertyAddress} on ${dateTime}.
+
+Please reply with:
+A) Yes, that time works for me
+B) No, I'm not available
+C) I need a different time`;
+  }
+
+  generateAlternativeAcceptedTemplate(requesterName, propertyAddress, dateTime) {
+    return `${requesterName} has accepted the new time for viewing your property at ${propertyAddress} on ${dateTime}.
+
+Please reply with:
+A) Confirmed, I'll be there
+B) Actually, I can't make that time
+C) I need to reschedule`;
+  }
+
+  generateClarifyDateTimeTemplate() {
+    return `Please specify the date and time you'd like to view the property. For example: "tomorrow at 2pm" or "next Monday at 10am".
+
+Please reply with:
+A) Tomorrow morning (9 AM - 12 PM)
+B) Tomorrow afternoon (1 PM - 5 PM)
+C) Next week morning
+D) Let me specify a time`;
+  }
+
+  generateAgentFullyBookedTemplate() {
+    return `I'm completely booked for the next few weeks. Please call me directly to find an available time.
+
+Please reply with:
+A) I'll call you today
+B) Send me your available times
+C) I'll find another agent`;
+  }
+
+  generateRequestForwardedTemplate(recipientName, dateTime) {
+    return `Your viewing request has been sent to ${recipientName} for ${dateTime}. You'll hear back shortly.
+
+Please reply with:
+A) Thank you
+B) I need to change the time
+C) Cancel this request`;
+  }
+
+  generateDeclineResponseTemplate() {
+    return `No problem! What time would work better for you?
+
+Please reply with:
+A) Morning (9 AM - 12 PM)
+B) Afternoon (1 PM - 5 PM)
+C) Evening (6 PM - 8 PM)
+D) Let me suggest a specific time`;
+  }
+
+  generateDeclineNotificationTemplate(otherPartyName) {
+    return `${otherPartyName} is not available for the requested viewing time and is asking for alternatives.
+
+Please reply with:
+A) I can be flexible with timing
+B) I need that specific time
+C) Cancel this request`;
   }
 
   // Send template message and update state
@@ -125,25 +190,25 @@ B) I need to reschedule`;
   async handleResponse(userId, message, currentState) {
     const response = this.parseMultipleChoiceResponse(message);
     const state = this.getState(userId);
-    
+
     console.log(`Handling response "${response}" for user ${userId} in state ${currentState.state}`);
-    
+
     switch (currentState.state) {
       case ConversationStateService.STATES.WAITING_FOR_AVAILABILITY:
-        return this.handleAvailabilityResponse(userId, response, state);
-        
+        return this.handleAvailabilityResponse(userId, response, state, message);
+
       case ConversationStateService.STATES.WAITING_FOR_ALTERNATIVE_RESPONSE:
-        return this.handleAlternativeResponse(userId, response, state);
-        
+        return this.handleAlternativeResponse(userId, response, state, message);
+
       case ConversationStateService.STATES.WAITING_FOR_NEW_TIME:
-        return this.handleNewTimeResponse(userId, response, state);
-        
+        return this.handleNewTimeResponse(userId, response, state, message);
+
       default:
         return this.handleInvalidState(userId, response, state);
     }
   }
 
-  async handleAvailabilityResponse(userId, response, state) {
+  async handleAvailabilityResponse(userId, response, state, message) {
     switch (response) {
       case 'option_a': // Yes, available
         await localMessageService.sendMessage(userId, "Great! Your viewing is confirmed. Details will be sent shortly.");
@@ -167,30 +232,43 @@ B) I need to reschedule`;
     }
   }
 
-  async handleAlternativeResponse(userId, response, state) {
+  async handleAlternativeResponse(userId, response, state, message) {
     switch (response) {
       case 'option_a': // Yes, alternative time works
-        await localMessageService.sendMessage(userId, "Perfect! Your viewing time has been updated.");
-        this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'alternative_accepted', userId };
-        
+        // Import viewing service to handle the alternative acceptance
+        const viewingService = require('./viewingService');
+
+        // Use the existing handlePartyAAlternativeResponse method
+        const result = await viewingService.handlePartyAAlternativeResponse({
+          from: userId,
+          content: 'option_a'
+        });
+
+        if (result && result.success) {
+          this.setState(userId, ConversationStateService.STATES.COMPLETED);
+          return { action: 'alternative_accepted', userId };
+        } else {
+          await localMessageService.sendMessage(userId, "Sorry, there was an issue processing your response. Please try again.");
+          return { action: 'error', userId };
+        }
+
       case 'option_b': // No, need different time
         const newTimeTemplate = this.generateNewTimeTemplate();
         await this.sendTemplateAndUpdateState(userId, newTimeTemplate,
           ConversationStateService.STATES.WAITING_FOR_NEW_TIME);
         return { action: 'needs_different_time', userId };
-        
+
       case 'option_c': // No longer interested
         await localMessageService.sendMessage(userId, "Understood. Thank you for letting us know.");
         this.setState(userId, ConversationStateService.STATES.COMPLETED);
         return { action: 'cancelled', userId };
-        
+
       default:
         return this.handleInvalidResponse(userId, state);
     }
   }
 
-  async handleNewTimeResponse(userId, response, state) {
+  async handleNewTimeResponse(userId, response, state, message) {
     switch (response) {
       case 'option_a': // Morning
         await localMessageService.sendMessage(userId, "Thanks! I'll check morning availability and get back to you.");

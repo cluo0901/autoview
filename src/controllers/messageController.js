@@ -36,7 +36,7 @@ class MessageController {
         if (currentState.state !== 'waiting_for_request') {
           console.log('Handling state-based response');
           const stateResponse = await conversationStateService.handleResponse(from, message, currentState);
-          response = { 
+          response = {
             message: 'Response processed',
             action: stateResponse.action,
             state: currentState.state
