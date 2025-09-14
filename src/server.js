@@ -5,10 +5,10 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const mongoose = require('mongoose');
 
-const whatsappRoutes = require('./routes/whatsapp');
 const calendarRoutes = require('./routes/calendar');
 const propertyRoutes = require('./routes/properties');
 const debugRoutes = require('./routes/debug');
+const messageRoutes = require('./routes/messages');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,10 +32,10 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/autoview'
   .catch(err => console.error('MongoDB connection error:', err));
 
 // Routes
-app.use('/webhook/whatsapp', whatsappRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/properties', propertyRoutes);
 app.use('/api/debug', debugRoutes);
+app.use('/api/messages', messageRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

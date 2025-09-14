@@ -1,31 +1,39 @@
 const Property = require('../models/Property');
 const ViewingRequest = require('../models/ViewingRequest');
-const whatsappService = require('./whatsappService');
+const localMessageService = require('./localMessageService');
 const calendarService = require('./calendarService');
 const aiService = require('./aiService');
+const conversationStateService = require('./conversationStateService');
 const moment = require('moment-timezone');
 
 class ViewingService {
-  async handleViewingRequest(message) {
+  async handleViewingRequest(message, aiAnalysis = null) {
     try {
-      // Find all properties associated with sender's phone number
-      const properties = await Property.find({
-        $or: [
-          { 'partyA.phone': message.from },
-          { 'partyB.phone': message.from }
-        ]
-      });
-
-      if (properties.length === 0) {
-        await whatsappService.sendMessage(
+      // Extract role and property from sender ID (e.g., "buyer-property123")
+      const senderInfo = this.parseRoleId(message.from);
+      if (!senderInfo) {
+        await localMessageService.sendMessage(
           message.from,
-          "Sorry, I couldn't find a property associated with your number. Please contact your agent directly."
+          "hmm can't tell who you are. try again?",
+          'agent'
         );
         return;
       }
 
-      // AI-enhanced property matching and message analysis
-      let property = null;
+      // Find the property based on role and property ID
+      let property = await Property.findById(senderInfo.propertyId);
+      if (!property) {
+        await localMessageService.sendMessage(
+          message.from,
+          "can't find that property, call me direct",
+          'agent'
+        );
+        return;
+      }
+
+      const properties = [property]; // Convert to array for compatibility
+
+      // AI-enhanced property matching and message analysis  
       let aiAnalysis = null;
       
       aiAnalysis = await aiService.analyzeMessage(message.content, { properties });
@@ -44,9 +52,9 @@ class ViewingService {
           property = properties[0];
           console.log(`Using single available property: ${property.address}`);
         } else {
-          await whatsappService.sendMessage(
+          await localMessageService.sendMessage(
             message.from,
-            `I need you to be more specific about which property you're referring to. Available properties: ${properties.map(p => p.address).join(', ')}`
+            `which property? i've got: ${properties.map(p => p.address).join(', ')}`
           );
           return;
         }
@@ -54,15 +62,15 @@ class ViewingService {
 
       // This should never happen now since we check properties.length above
       if (!property) {
-        await whatsappService.sendMessage(
+        await localMessageService.sendMessage(
           message.from,
-          "Sorry, I couldn't find a property associated with your number. Please contact your agent directly."
+          "no property found for you, call me direct"
         );
         return;
       }
 
-      // Determine who is requesting (partyA or partyB)
-      const requestedBy = property.partyA.phone === message.from ? 'partyA' : 'partyB';
+      // Determine who is requesting (partyA or partyB) based on role
+      const requestedBy = this.determineRequestingParty(senderInfo.role, property);
       
       // AI date/time extraction
       let requestedDateTime = null;
@@ -101,7 +109,7 @@ class ViewingService {
           context: "User didn't specify clear date/time" 
         });
         
-        await whatsappService.sendMessage(message.from, errorMessage);
+        await localMessageService.sendMessage(message.from, errorMessage);
         return;
       }
 
@@ -133,7 +141,7 @@ class ViewingService {
             context: aiAnalysis.context
           });
           
-          await whatsappService.sendMessage(message.from, alternativeMessage);
+          await localMessageService.sendMessage(message.from, alternativeMessage);
           
           viewingRequest.alternativeSlots.push({
             dateTime: nextSlot,
@@ -148,7 +156,7 @@ class ViewingService {
             context: aiAnalysis.context
           });
           
-          await whatsappService.sendMessage(message.from, noAvailabilityMessage);
+          await localMessageService.sendMessage(message.from, noAvailabilityMessage);
         }
         
         await viewingRequest.save();
@@ -158,6 +166,9 @@ class ViewingService {
       // Agent is available, forward to other party
       const otherParty = requestedBy === 'partyA' ? property.partyB : property.partyA;
       const requesterName = requestedBy === 'partyA' ? property.partyA.name : property.partyB.name;
+      const otherPartyRoleId = this.getOtherPartyRoleId(property, 
+        senderInfo.role, 
+        senderInfo.propertyId);
       
       
       // Generate AI forwarding message
@@ -177,15 +188,15 @@ class ViewingService {
         context: aiAnalysis.context
       });
       
-      await whatsappService.sendMessage(otherParty.phone, forwardingMessage);
-      await whatsappService.sendMessage(message.from, confirmationMessage);
+      await localMessageService.sendMessage(otherPartyRoleId, forwardingMessage);
+      await localMessageService.sendMessage(message.from, confirmationMessage);
 
       viewingRequest.status = 'pending_other_party';
       await viewingRequest.save();
 
     } catch (error) {
       console.error('Error handling viewing request:', error);
-      await whatsappService.sendMessage(
+      await localMessageService.sendMessage(
         message.from,
         "Sorry, there was an error processing your request. Please try again or contact your agent directly."
       );
@@ -250,11 +261,8 @@ class ViewingService {
     try {
       console.log(`Processing confirmation response from ${message.from}: "${message.content}"`);
       
-      // First check if this is Party A responding to an alternative time suggestion
-      const partyAResponse = await this.handlePartyAAlternativeResponse(message);
-      if (partyAResponse) {
-        return; // Party A response was handled
-      }
+      // This method now only handles landlord/seller confirmations to viewing requests
+      // Alternative responses from tenants are handled separately
       
       // Find viewing requests where this person could be involved and status is pending or alternative
       const viewingRequests = await ViewingRequest.find({
@@ -269,10 +277,17 @@ class ViewingService {
         return;
       }
 
-      // Find the most recent request where this person is Party B
+      // Find the most recent request where this person is responding (could be Party A or B)
       let viewingRequest = null;
       for (const request of viewingRequests) {
-        if (request.property.partyB.phone === message.from) {
+        const partyARoleId = this.getOtherPartyRoleId(request.property, 
+          request.property.partyA.role === 'buyer' ? 'seller' : 'landlord', 
+          request.property._id);
+        const partyBRoleId = this.getOtherPartyRoleId(request.property, 
+          request.property.partyB.role === 'seller' ? 'buyer' : 'tenant', 
+          request.property._id);
+        
+        if (partyARoleId === message.from || partyBRoleId === message.from) {
           viewingRequest = request;
           break;
         }
@@ -284,7 +299,9 @@ class ViewingService {
       }
 
       console.log(`Found viewing request: ${viewingRequest._id}, status: ${viewingRequest.status}`);
-      console.log(`Message from ${message.from}, requestedBy: ${viewingRequest.requestedBy}, isPartyA: ${viewingRequest.requestedBy === 'partyA' && viewingRequest.property.partyA.phone === message.from}`);
+      const senderInfo = this.parseRoleId(message.from);
+      const isPartyA = (viewingRequest.requestedBy === 'partyA' && senderInfo.role === viewingRequest.property.partyA.role);
+      console.log(`Message from ${message.from}, requestedBy: ${viewingRequest.requestedBy}, isPartyA: ${isPartyA}`);
       console.log(`Not from the original requester`);
 
       // Determine if it's a positive or negative response
@@ -313,9 +330,10 @@ class ViewingService {
         console.log(`Calendar event created: ${event.id}`);
 
         // Notify the requester (Party A)
-        const requesterPhone = viewingRequest.requestedBy === 'partyA' 
-          ? viewingRequest.property.partyA.phone 
-          : viewingRequest.property.partyB.phone;
+        const requesterRole = viewingRequest.requestedBy === 'partyA' 
+          ? viewingRequest.property.partyA.role 
+          : viewingRequest.property.partyB.role;
+        const requesterRoleId = `${requesterRole}-${viewingRequest.property._id}`;
         const requesterName = viewingRequest.requestedBy === 'partyA' 
           ? viewingRequest.property.partyA.name 
           : viewingRequest.property.partyB.name;
@@ -323,12 +341,24 @@ class ViewingService {
           ? viewingRequest.property.partyB.name 
           : viewingRequest.property.partyA.name;
 
+        // Determine correct roles based on who is buyer/tenant vs seller/landlord
+        const requesterActualRole = viewingRequest.requestedBy === 'partyA' 
+          ? viewingRequest.property.partyA.role 
+          : viewingRequest.property.partyB.role;
+        const otherPartyActualRole = viewingRequest.requestedBy === 'partyA' 
+          ? viewingRequest.property.partyB.role 
+          : viewingRequest.property.partyA.role;
+          
+        // Buyer/tenant is always visitor, seller/landlord is always host
+        const requesterFinalRole = (requesterActualRole === 'buyer' || requesterActualRole === 'tenant') ? 'visitor' : 'host';
+        const otherPartyFinalRole = (otherPartyActualRole === 'seller' || otherPartyActualRole === 'landlord') ? 'host' : 'visitor';
+
         // Generate AI confirmation messages
         const confirmationMessageToRequester = await aiService.generateResponse('final_confirmation', {
           propertyAddress: viewingRequest.property.address,
           dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
           recipientName: requesterName,
-          recipientRole: 'visitor', // Party A is the visitor viewing the property
+          recipientRole: requesterFinalRole,
           otherPartyName: otherPartyName,
           responseType: 'final_confirmation'
         });
@@ -337,18 +367,23 @@ class ViewingService {
           propertyAddress: viewingRequest.property.address,
           dateTime: calendarService.formatDateTime(viewingRequest.requestedDateTime),
           recipientName: otherPartyName,
-          recipientRole: 'host', // Party B is the host showing the property
+          recipientRole: otherPartyFinalRole,
           requesterName: requesterName,
           responseType: 'final_confirmation'
         });
         
-        await whatsappService.sendMessage(requesterPhone, confirmationMessageToRequester);
-        console.log(`Confirmation sent to requester: ${requesterPhone}`);
+        await localMessageService.sendMessage(requesterRoleId, confirmationMessageToRequester);
+        console.log(`Confirmation sent to requester: ${requesterRoleId}`);
 
         // Also confirm to Party B
-        await whatsappService.sendMessage(message.from, confirmationMessageToOtherParty);
+        await localMessageService.sendMessage(message.from, confirmationMessageToOtherParty);
 
       } else {
+        // Define the missing otherPartyName for the decline response
+        const otherPartyName = viewingRequest.requestedBy === 'partyA' 
+          ? viewingRequest.property.partyB.name 
+          : viewingRequest.property.partyA.name;
+          
         // Generate AI decline response
         const declineResponse = await aiService.generateResponse('decline_response', {
           propertyAddress: viewingRequest.property.address,
@@ -362,7 +397,7 @@ class ViewingService {
           otherPartyName: otherPartyName
         });
         
-        await whatsappService.sendMessage(message.from, declineResponse);
+        await localMessageService.sendMessage(message.from, declineResponse);
         
         viewingRequest.status = 'rescheduling';
         await viewingRequest.save();
@@ -372,7 +407,7 @@ class ViewingService {
           ? viewingRequest.property.partyA.phone 
           : viewingRequest.property.partyB.phone;
 
-        await whatsappService.sendMessage(requesterPhone, notifyRequesterMessage);
+        await localMessageService.sendMessage(requesterPhone, notifyRequesterMessage);
       }
 
       // Add this message to the viewing request history
@@ -403,9 +438,10 @@ class ViewingService {
 
       console.log(`Found viewing request with alternative slots: ${viewingRequest._id}, status: ${viewingRequest.status}`);
 
-      // Check if this message is from Party A (the original requester)
-      const isPartyA = (viewingRequest.requestedBy === 'partyA' && viewingRequest.property.partyA.phone === message.from) ||
-                       (viewingRequest.requestedBy === 'partyB' && viewingRequest.property.partyB.phone === message.from);
+      // Check if this message is from Party A (the original requester) using role IDs
+      const senderInfo = this.parseRoleId(message.from);
+      const requesterRole = viewingRequest.requestedBy === 'partyA' ? viewingRequest.property.partyA.role : viewingRequest.property.partyB.role;
+      const isPartyA = senderInfo && senderInfo.role === requesterRole;
 
       console.log(`Message from ${message.from}, requestedBy: ${viewingRequest.requestedBy}, isPartyA: ${isPartyA}`);
 
@@ -439,28 +475,50 @@ class ViewingService {
         viewingRequest.property.partyA.name : 
         viewingRequest.property.partyB.name;
 
-      await whatsappService.sendMessage(
-        otherParty.phone,
-        `Hi ${otherParty.name}, ${requesterName} would like to view ${viewingRequest.property.address} on ${calendarService.formatDateTime(alternativeSlot.dateTime)}. Are you available? Reply YES to confirm or suggest alternative times.`
+      // Generate casual message using AI
+      const casualMessage = await aiService.generateResponse('forward_to_seller', {
+        propertyAddress: viewingRequest.property.address,
+        dateTime: calendarService.formatDateTime(alternativeSlot.dateTime),
+        recipientName: otherParty.name,
+        senderName: requesterName,
+        responseType: 'forward_to_seller'
+      });
+
+      await localMessageService.sendMessage(
+        this.getOtherPartyRoleId(viewingRequest.property, 
+          viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant', 
+          viewingRequest.property._id),
+        casualMessage
       );
 
-      console.log(`Alternative time forwarded to Party B: ${otherParty.phone}`);
+      console.log(`Alternative time forwarded to Party B: ${this.getOtherPartyRoleId(viewingRequest.property, 
+          viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant', 
+          viewingRequest.property._id)}`);
 
       // Confirm to Party A that we've sent the request
-      await whatsappService.sendMessage(
+      await localMessageService.sendMessage(
         message.from,
-        `Perfect! I've sent your updated viewing request to ${otherParty.name} for ${calendarService.formatDateTime(alternativeSlot.dateTime)}. You'll hear back shortly.`
+        `cool! sent to ${otherParty.name} for ${calendarService.formatDateTime(alternativeSlot.dateTime)}`
       );
 
       // Add this message to the viewing request history
       viewingRequest.messages.push(message);
       await viewingRequest.save();
 
-      return true; // Successfully handled Party A response
+      return {
+        message: 'Alternative time accepted and forwarded to landlord',
+        success: true,
+        viewingRequest: viewingRequest,
+        nextStep: 'waiting_for_landlord_confirmation'
+      }; // Successfully handled Party A response
 
     } catch (error) {
       console.error('Error handling Party A alternative response:', error);
-      return false;
+      return {
+        message: 'Error processing alternative time response',
+        success: false,
+        error: error.message
+      };
     }
   }
 
@@ -470,6 +528,76 @@ class ViewingService {
       ...message,
       content: isConfirmed ? 'yes' : 'no'
     });
+  }
+
+  // Helper method to parse role ID (e.g., "buyer-64f1b2c3d4e5f6g7h8i9j0k1")
+  parseRoleId(roleId) {
+    if (roleId === 'agent') {
+      return { role: 'agent', propertyId: null };
+    }
+
+    const parts = roleId.split('-');
+    if (parts.length >= 2) {
+      return {
+        role: parts[0],
+        propertyId: parts[1]
+      };
+    }
+
+    return null;
+  }
+
+  // Helper method to get the other party's role ID from a property
+  getOtherPartyRoleId(property, currentRole, currentPropertyId) {
+    if (currentRole === property.partyA.role) {
+      // Current sender is Party A, so other party is Party B
+      return `${property.partyB.role}-${currentPropertyId}`;
+    } else if (currentRole === property.partyB.role) {
+      // Current sender is Party B, so other party is Party A
+      return `${property.partyA.role}-${currentPropertyId}`;
+    }
+    
+    return null;
+  }
+
+  // Helper method to format role for display
+  formatRoleDisplay(role, propertyAddress) {
+    const propertyTag = this.getPropertyTag(propertyAddress);
+    
+    if (role === 'seller' || role === 'landlord') {
+      return `${this.capitalizeFirst(role)} (${propertyTag})`;
+    }
+    
+    if (role === 'buyer' || role === 'tenant') {
+      return `${this.capitalizeFirst(role)} (${propertyTag})`;
+    }
+    
+    return this.capitalizeFirst(role);
+  }
+
+  getPropertyTag(address) {
+    if (address.toLowerCase().includes('marina bay')) return 'Marina Bay';
+    if (address.toLowerCase().includes('orchard')) return 'Orchard';
+    if (address.toLowerCase().includes('sentosa')) return 'Sentosa';
+    
+    const words = address.split(' ');
+    return words.length > 1 ? `${words[0]} ${words[1]}` : words[0];
+  }
+
+  capitalizeFirst(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  // Helper method to determine which party is making the request
+  determineRequestingParty(role, property) {
+    if (role === property.partyA.role) {
+      return 'partyA';
+    } else if (role === property.partyB.role) {
+      return 'partyB';
+    }
+    
+    // Default fallback
+    return 'partyA';
   }
 }
 
