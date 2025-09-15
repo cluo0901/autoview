@@ -32,39 +32,113 @@ class MessageController {
       console.log(`User ${from} is in state: ${currentState.state}`);
       
       try {
-        // Check if this is a multiple choice response to an existing conversation
-        if (currentState.state !== 'waiting_for_request') {
-          console.log('Handling state-based response');
+        // Handle based on simplified conversation states
+        if (currentState.state === 'waiting_for_confirmation' || currentState.state === 'waiting_for_new_timing') {
+          // Handle A/B templated responses
+          console.log('Handling templated A/B response');
           const stateResponse = await conversationStateService.handleResponse(from, message, currentState);
           response = {
             message: 'Response processed',
             action: stateResponse.action,
             state: currentState.state
           };
-        } else {
-          // This should be a new viewing request - use minimal AI analysis
-          console.log('Processing new viewing request');
-          
-          // Get available properties for context
-          const properties = await Property.find();
-          
-          // Use AI only to extract basic information from the viewing request
-          const aiAnalysis = await aiService.analyzeMessage(message.content, { 
-            properties,
-            currentSender: from
-          });
-          console.log('AI Analysis Result (request parsing only):', aiAnalysis);
-          
-          // Check if AI detected a viewing request
-          if (aiAnalysis.messageType === 'viewing_request') {
-            console.log('New viewing request detected');
-            response = await viewingService.handleViewingRequest(message, aiAnalysis);
+        } else if (currentState.state === 'waiting_for_request') {
+          // Handle initial requests or counter-proposals with natural language timing
+          if (currentState.data?.isCounterProposal) {
+            console.log('Processing counter-proposal time suggestion');
+
+            // Get available properties for context
+            const properties = await Property.find();
+
+            // Use AI to parse the suggested time with enhanced context
+            // Handle multiple possible field names for the original datetime
+            const originalDateTime = currentState.data.originalRequest?.requestedDateTime ||
+                                   currentState.data.originalRequest?.proposedDateTime ||
+                                   currentState.data.originalRequest?.originalDateTime;
+
+
+            const originalDateStr = originalDateTime ? new Date(originalDateTime).toDateString() : 'the original proposed date';
+
+            const aiAnalysis = await aiService.analyzeMessage(message.content, {
+              properties,
+              currentSender: from,
+              isCounterProposal: true,
+              originalContext: currentState.data.originalRequest,
+              originalDateTime: originalDateTime,
+              contextHint: `The user is suggesting an alternative time for ${originalDateStr}. If they only mention a time (like "5pm"), assume it's for ${originalDateStr}, NOT today. Original date context: ${originalDateStr}`
+            });
+
+            console.log('Debug - AI Analysis dateTime:', JSON.stringify(aiAnalysis.dateTime));
+            console.log('Debug - originalDateTime:', originalDateTime);
+            console.log('Debug - condition checks:', {
+              extracted: !!aiAnalysis.dateTime.extracted,
+              hasTime: !!aiAnalysis.dateTime.time,
+              hasOriginalDateTime: !!originalDateTime
+            });
+
+            if (aiAnalysis.dateTime.extracted) {
+              console.log('Counter-proposal time detected:', aiAnalysis.dateTime.extracted);
+              // Use the central flow handler
+              response = await viewingService.handleCounterProposal(message, aiAnalysis, currentState.data.originalRequest);
+            } else if (aiAnalysis.dateTime.time && originalDateTime) {
+              // AI extracted only time, not full date - construct full datetime using original date
+              console.log(`AI extracted time (${aiAnalysis.dateTime.time}) but not full date. Constructing full datetime using original date.`);
+              console.log('Debug - aiAnalysis.dateTime:', JSON.stringify(aiAnalysis.dateTime));
+              console.log('Debug - originalDateTime:', originalDateTime);
+
+              const originalDate = new Date(originalDateTime);
+              const [hours, minutes] = aiAnalysis.dateTime.time.split(':');
+              const newDateTime = new Date(originalDate.getFullYear(), originalDate.getMonth(), originalDate.getDate(), parseInt(hours), parseInt(minutes || '0'));
+
+              // Construct enhanced AI analysis with full datetime
+              const enhancedAnalysis = {
+                ...aiAnalysis,
+                dateTime: {
+                  ...aiAnalysis.dateTime,
+                  extracted: newDateTime.toISOString()
+                }
+              };
+
+              console.log('Enhanced counter-proposal time constructed:', enhancedAnalysis.dateTime.extracted);
+              response = await viewingService.handleCounterProposal(message, enhancedAnalysis, currentState.data.originalRequest);
+            } else {
+              response = {
+                message: 'Please suggest a specific time, for example: "Tomorrow at 2pm" or "Next Monday at 10am"'
+              };
+            }
           } else {
-            console.log('No viewing request detected, sending help message');
-            response = { 
-              message: 'To request a viewing, please tell me which property you\'d like to see and your preferred date/time. For example: "I would like to view the Marina Bay property tomorrow at 2pm"'
-            };
+            // This is a new viewing request
+            console.log('Processing new viewing request');
+
+            // Get available properties for context
+            const properties = await Property.find();
+
+            // Use AI to extract viewing request details
+            const aiAnalysis = await aiService.analyzeMessage(message.content, {
+              properties,
+              currentSender: from
+            });
+            console.log('AI Analysis Result (new request):', aiAnalysis);
+
+            // Check if AI detected a viewing request
+            if (aiAnalysis.messageType === 'viewing_request' || aiAnalysis.messageType === 'new_viewing_request') {
+              console.log('New viewing request detected');
+              // Use the central flow handler
+              response = await viewingService.handleViewingRequest(message, aiAnalysis);
+            } else {
+              console.log('No viewing request detected, sending help message');
+              response = {
+                message: 'To request a viewing, please tell me which property you\'d like to see and your preferred date/time. For example: "I would like to view the Marina Bay property tomorrow at 2pm"'
+              };
+            }
           }
+        } else {
+          // Unknown state - reset to initial state
+          console.log('Unknown state, resetting to waiting_for_request');
+          conversationStateService.setState(from, 'waiting_for_request');
+          response = {
+            message: 'Let\'s start fresh. How can I help you with scheduling a viewing?'
+          };
         }
       } catch (error) {
         console.error('Error processing message:', error);

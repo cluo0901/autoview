@@ -7,6 +7,172 @@ const conversationStateService = require('./conversationStateService');
 const moment = require('moment-timezone');
 
 class ViewingService {
+  // Central flow handler - implements the clean recursive logic
+  // Step 1: AI analysis to extract timing proposal
+  // Step 2: Check agent calendar → forward/alternative
+  async processViewingProposal(sender, proposedDateTime, propertyId, originalRequestData = null) {
+    try {
+      console.log(`Processing viewing proposal from ${sender} for ${proposedDateTime} at property ${propertyId}`);
+
+      // Loop prevention: Check if this user has been going back and forth too many times
+      const currentState = conversationStateService.getState(sender);
+      const proposalAttempts = (currentState.data?.proposalAttempts || 0) + 1;
+
+      console.log(`Proposal attempt #${proposalAttempts} for user ${sender}`);
+
+      // After 3 attempts, suggest calling agent directly
+      if (proposalAttempts >= 3) {
+        console.log('Too many proposal attempts, suggesting direct agent call');
+        await localMessageService.sendMessage(sender,
+          'We\'ve been going back and forth quite a bit! Let me give you a call to sort this out more efficiently. What\'s the best number to reach you?');
+
+        conversationStateService.setState(sender, conversationStateService.constructor.STATES.COMPLETED, {
+          proposalAttempts: proposalAttempts,
+          needsDirectCall: true
+        });
+
+        return { success: true, message: 'Loop prevented, direct call requested' };
+      }
+
+      // Get property details
+      const property = await Property.findById(propertyId);
+      if (!property) {
+        await localMessageService.sendMessage(sender,
+          'Sorry, I cannot find the property details. Please contact me directly.');
+        return { success: false, message: 'Property not found' };
+      }
+
+      // Update proposal attempt count for this user
+      const updatedRequestData = {
+        ...originalRequestData,
+        proposalAttempts: proposalAttempts
+      };
+
+      // Step 2: Check agent's availability
+      const isAgentAvailable = await calendarService.checkAvailability(proposedDateTime);
+
+      if (isAgentAvailable) {
+        // Step 2a: Agent available - forward to other party with A/B confirmation options
+        return this.forwardToOtherParty(sender, proposedDateTime, property, updatedRequestData);
+      } else {
+        // Step 2b: Agent not available - propose nearest available time with A/B options
+        return this.proposeAlternativeTime(sender, proposedDateTime, property, updatedRequestData);
+      }
+
+    } catch (error) {
+      console.error('Error processing viewing proposal:', error);
+      await localMessageService.sendMessage(sender,
+        'Sorry, there was an error processing your proposal. Please try again.');
+      return { success: false, message: 'Processing error', error: error.message };
+    }
+  }
+
+  async forwardToOtherParty(sender, proposedDateTime, property, originalRequestData) {
+    // Determine who the other party is
+    const senderInfo = this.parseRoleId(sender);
+    const otherPartyRoleId = this.getOtherPartyRoleId(property, senderInfo.role, property._id);
+    const otherParty = senderInfo.role === property.partyA.role ? property.partyB : property.partyA;
+    const senderName = senderInfo.role === property.partyA.role ? property.partyA.name : property.partyB.name;
+
+    // Send viewing request to other party with A/B confirmation template
+    // Check if this is a counter-proposal (indicated by proposal attempts > 0 or alternative datetime)
+    const isCounterProposal = originalRequestData && (
+      (originalRequestData.proposalAttempts && originalRequestData.proposalAttempts > 0) ||
+      originalRequestData.alternativeDateTime ||
+      originalRequestData.isCounterProposal
+    );
+
+    let forwardingMessage;
+    if (isCounterProposal) {
+      // Use counter-proposal template for alternative time suggestions
+      forwardingMessage = conversationStateService.generateCounterProposalTemplate(
+        senderName,
+        property.address,
+        calendarService.formatDateTime(proposedDateTime)
+      );
+    } else {
+      // Use standard viewing request template for initial requests
+      forwardingMessage = conversationStateService.generateViewingRequestTemplate(
+        senderName,
+        property.address,
+        calendarService.formatDateTime(proposedDateTime)
+      );
+    }
+
+    const confirmationMessage = conversationStateService.generateRequestForwardedTemplate(
+      otherParty.name,
+      calendarService.formatDateTime(proposedDateTime),
+      senderInfo.role
+    );
+
+    await localMessageService.sendMessage(otherPartyRoleId, forwardingMessage);
+    await localMessageService.sendMessage(sender, confirmationMessage);
+
+    // Set conversation state for the other party - waiting for confirmation (A/B)
+    conversationStateService.setState(otherPartyRoleId,
+      conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+      {
+        propertyId: property._id,
+        proposedDateTime: proposedDateTime,
+        requesterName: senderName,
+        originalRequestData: originalRequestData
+      }
+    );
+
+    // Set sender state to completed (they've done their part)
+    // Include proposal attempt count for tracking
+    conversationStateService.setState(sender, conversationStateService.constructor.STATES.COMPLETED, {
+      proposalAttempts: originalRequestData?.proposalAttempts || 0
+    });
+
+    return { success: true, message: 'Request forwarded to other party' };
+  }
+
+  async proposeAlternativeTime(sender, proposedDateTime, property, originalRequestData) {
+    const nextSlot = await calendarService.findNextAvailableSlot(proposedDateTime);
+
+    if (nextSlot) {
+      // Send alternative time proposal with A/B options (Ok / Can't make it)
+      const alternativeMessage = conversationStateService.generateAlternativeTemplate(
+        calendarService.formatDateTime(proposedDateTime),
+        calendarService.formatDateTime(nextSlot)
+      );
+
+      await localMessageService.sendMessage(sender, alternativeMessage);
+
+      // Set conversation state - waiting for confirmation of alternative (A/B)
+      // Include proposal attempt count for tracking
+      conversationStateService.setState(sender,
+        conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+        {
+          propertyId: property._id,
+          originalDateTime: proposedDateTime,
+          alternativeDateTime: nextSlot,
+          originalRequestData: originalRequestData,
+          proposalAttempts: originalRequestData?.proposalAttempts || 0
+        }
+      );
+
+      return { success: true, message: 'Alternative time proposed' };
+    } else {
+      // Agent fully booked
+      const noAvailabilityMessage = conversationStateService.generateAgentFullyBookedTemplate();
+      await localMessageService.sendMessage(sender, noAvailabilityMessage);
+
+      conversationStateService.setState(sender,
+        conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+        {
+          propertyId: property._id,
+          fullyBooked: true,
+          originalRequestData: originalRequestData,
+          proposalAttempts: originalRequestData?.proposalAttempts || 0
+        }
+      );
+
+      return { success: true, message: 'Agent fully booked, call requested' };
+    }
+  }
+
   async handleViewingRequest(message, aiAnalysis = null) {
     try {
       // Extract role and property from sender ID (e.g., "buyer-property123")
@@ -21,7 +187,7 @@ class ViewingService {
       }
 
       // Find the property based on role and property ID
-      let property = await Property.findById(senderInfo.propertyId);
+      const property = await Property.findById(senderInfo.propertyId);
       if (!property) {
         await localMessageService.sendMessage(
           message.from,
@@ -31,87 +197,40 @@ class ViewingService {
         return;
       }
 
-      const properties = [property]; // Convert to array for compatibility
+      // Step 1: Use AI to extract proposed timing from the message
+      const properties = [property];
+      const aiAnalysisResult = await aiService.analyzeMessage(message.content, { properties });
 
-      // AI-enhanced property matching and message analysis  
-      let aiAnalysis = null;
-      
-      aiAnalysis = await aiService.analyzeMessage(message.content, { properties });
-      
-      // Use AI to match property
-      if (aiAnalysis.property.matched && aiAnalysis.property.confidence > 0.6) {
-        property = properties.find(p => 
-          p.address.toLowerCase().includes(aiAnalysis.property.matched.toLowerCase())
-        );
-        console.log(`AI matched property: ${aiAnalysis.property.matched} (confidence: ${aiAnalysis.property.confidence})`);
-      }
-      
-      // If AI couldn't match with high confidence, require manual specification
-      if (!property) {
-        if (properties.length === 1) {
-          property = properties[0];
-          console.log(`Using single available property: ${property.address}`);
-        } else {
-          await localMessageService.sendMessage(
-            message.from,
-            `which property? i've got: ${properties.map(p => p.address).join(', ')}`
-          );
-          return;
-        }
-      }
-
-      // This should never happen now since we check properties.length above
-      if (!property) {
-        await localMessageService.sendMessage(
-          message.from,
-          "no property found for you, call me direct"
-        );
-        return;
-      }
-
-      // Determine who is requesting (partyA or partyB) based on role
-      const requestedBy = this.determineRequestingParty(senderInfo.role, property);
-      
-      // AI date/time extraction
-      let requestedDateTime = null;
-      
-      if (aiAnalysis.dateTime.extracted) {
+      // Extract and parse the proposed date/time
+      let proposedDateTime = null;
+      if (aiAnalysisResult.dateTime.extracted) {
         // Use moment.js to properly handle timezone-aware parsing
-        if (aiAnalysis.dateTime.extracted.includes('T')) {
-          // ISO string from AI - parse with timezone awareness
-          if (aiAnalysis.dateTime.extracted.includes('+08:00')) {
-            // Singapore timezone format
-            requestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
-          } else if (aiAnalysis.dateTime.extracted.includes('Z')) {
-            // UTC format - convert to Singapore timezone
-            requestedDateTime = moment.utc(aiAnalysis.dateTime.extracted).tz('Asia/Singapore').toDate();
+        if (aiAnalysisResult.dateTime.extracted.includes('T')) {
+          if (aiAnalysisResult.dateTime.extracted.includes('+08:00')) {
+            proposedDateTime = moment.tz(aiAnalysisResult.dateTime.extracted, 'Asia/Singapore').toDate();
+          } else if (aiAnalysisResult.dateTime.extracted.includes('Z')) {
+            proposedDateTime = moment.utc(aiAnalysisResult.dateTime.extracted).tz('Asia/Singapore').toDate();
           } else {
-            // ISO format without timezone - assume Singapore time
-            requestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
+            proposedDateTime = moment.tz(aiAnalysisResult.dateTime.extracted, 'Asia/Singapore').toDate();
           }
         } else {
-          // Try parsing as is with Singapore timezone
-          requestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
+          proposedDateTime = moment.tz(aiAnalysisResult.dateTime.extracted, 'Asia/Singapore').toDate();
         }
-        
-        console.log(`AI extracted date/time: ${requestedDateTime}`);
-        console.log(`Original AI string: ${aiAnalysis.dateTime.extracted}`);
-        console.log(`Formatted for display: ${moment(requestedDateTime).tz('Asia/Singapore').format('dddd, MMMM Do YYYY, h:mm A')}`);
-        
+
+        console.log(`AI extracted date/time: ${proposedDateTime}`);
+
         // Validate the extracted date
-        if (isNaN(requestedDateTime.getTime())) {
-          throw new Error(`AI extracted invalid date/time: ${aiAnalysis.dateTime.extracted}`);
+        if (isNaN(proposedDateTime.getTime())) {
+          throw new Error(`AI extracted invalid date/time: ${aiAnalysisResult.dateTime.extracted}`);
         }
       }
 
-      if (!requestedDateTime) {
+      if (!proposedDateTime) {
         const errorMessage = conversationStateService.generateClarifyDateTimeTemplate();
-
         await localMessageService.sendMessage(message.from, errorMessage);
 
-        // Set conversation state to wait for clearer date/time specification
         conversationStateService.setState(message.from,
-          conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIME,
+          conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIMING,
           {
             propertyId: property._id,
             needsClarification: true
@@ -120,105 +239,15 @@ class ViewingService {
         return;
       }
 
-      // Create viewing request
-      const viewingRequest = new ViewingRequest({
-        property: property._id,
-        requestedBy,
-        requestedDateTime,
-        messages: [message]
-      });
-
-      await viewingRequest.save();
-
-      // Check agent's availability
-      const isAgentAvailable = await calendarService.checkAvailability(requestedDateTime);
-
-      if (!isAgentAvailable) {
-        const nextSlot = await calendarService.findNextAvailableSlot(requestedDateTime);
-        
-        if (nextSlot) {
-          const formattedTime = calendarService.formatDateTime(nextSlot);
-          
-          // Use templated alternative time message with clear A/B/C options
-          const alternativeMessage = conversationStateService.generateAlternativeTemplate(
-            calendarService.formatDateTime(requestedDateTime),
-            formattedTime
-          );
-
-          await localMessageService.sendMessage(message.from, alternativeMessage);
-
-          // Update conversation state to wait for alternative response
-          conversationStateService.setState(message.from,
-            conversationStateService.constructor.STATES.WAITING_FOR_ALTERNATIVE_RESPONSE,
-            {
-              propertyId: property._id,
-              originalDateTime: requestedDateTime,
-              alternativeDateTime: nextSlot,
-              viewingRequestId: viewingRequest._id
-            }
-          );
-
-          viewingRequest.alternativeSlots.push({
-            dateTime: nextSlot,
-            suggestedBy: 'agent'
-          });
-          viewingRequest.status = 'agent_suggested_alternative';
-        } else {
-          // Use templated fully booked message with clear A/B/C options
-          const noAvailabilityMessage = conversationStateService.generateAgentFullyBookedTemplate();
-
-          await localMessageService.sendMessage(message.from, noAvailabilityMessage);
-
-          // Set conversation state to handle their response
-          conversationStateService.setState(message.from,
-            conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIME,
-            {
-              propertyId: property._id,
-              fullyBooked: true
-            }
-          );
-        }
-        
-        await viewingRequest.save();
-        return;
-      }
-
-      // Agent is available, forward to other party
-      const otherParty = requestedBy === 'partyA' ? property.partyB : property.partyA;
-      const requesterName = requestedBy === 'partyA' ? property.partyA.name : property.partyB.name;
-      const otherPartyRoleId = this.getOtherPartyRoleId(property, 
-        senderInfo.role, 
-        senderInfo.propertyId);
-      
-      
-      // Use templated viewing request message with clear A/B/C options
-      const forwardingMessage = conversationStateService.generateViewingRequestTemplate(
-        requesterName,
-        property.address,
-        calendarService.formatDateTime(requestedDateTime)
+      // Step 2: Use the central flow handler - this implements the clean logic
+      const result = await this.processViewingProposal(
+        message.from,
+        proposedDateTime,
+        property._id,
+        { originalMessage: message }
       );
-      
-      const confirmationMessage = conversationStateService.generateRequestForwardedTemplate(
-        otherParty.name,
-        calendarService.formatDateTime(requestedDateTime)
-      );
-      
-      await localMessageService.sendMessage(otherPartyRoleId, forwardingMessage);
 
-      // Set conversation state for the other party to wait for their availability response
-      conversationStateService.setState(otherPartyRoleId,
-        conversationStateService.constructor.STATES.WAITING_FOR_AVAILABILITY,
-        {
-          propertyId: property._id,
-          requestedDateTime: requestedDateTime,
-          viewingRequestId: viewingRequest._id,
-          requesterName: requesterName
-        }
-      );
-      await localMessageService.sendMessage(message.from, confirmationMessage);
-
-      viewingRequest.status = 'pending_other_party';
-      await viewingRequest.save();
+      console.log('Viewing proposal processed:', result);
 
     } catch (error) {
       console.error('Error handling viewing request:', error);
@@ -226,6 +255,63 @@ class ViewingService {
         message.from,
         "Sorry, there was an error processing your request. Please try again or contact your agent directly."
       );
+    }
+  }
+
+  async handleCounterProposal(message, aiAnalysis, originalRequest) {
+    try {
+      console.log('Handling counter-proposal with suggested time:', aiAnalysis.dateTime.extracted);
+
+      // Extract role and property from sender ID
+      const senderInfo = this.parseRoleId(message.from);
+      if (!senderInfo || !senderInfo.propertyId) {
+        await localMessageService.sendMessage(message.from,
+          'Sorry, I cannot identify which property this is for. Please start a new viewing request.');
+        return { message: 'Cannot identify property' };
+      }
+
+      // Parse the suggested time using the same logic as handleViewingRequest
+      let suggestedDateTime = null;
+      if (aiAnalysis.dateTime.extracted) {
+        if (aiAnalysis.dateTime.extracted.includes('T')) {
+          if (aiAnalysis.dateTime.extracted.includes('+08:00')) {
+            suggestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
+          } else if (aiAnalysis.dateTime.extracted.includes('Z')) {
+            suggestedDateTime = moment.utc(aiAnalysis.dateTime.extracted).tz('Asia/Singapore').toDate();
+          } else {
+            suggestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
+          }
+        } else {
+          suggestedDateTime = moment.tz(aiAnalysis.dateTime.extracted, 'Asia/Singapore').toDate();
+        }
+
+        console.log(`Counter-proposal extracted date/time: ${suggestedDateTime}`);
+      }
+
+      if (!suggestedDateTime || isNaN(suggestedDateTime.getTime())) {
+        await localMessageService.sendMessage(message.from,
+          'Please suggest a specific time, for example: "Tomorrow at 2pm" or "Next Monday at 10am"');
+        return { message: 'Invalid time suggestion' };
+      }
+
+      // Use the central flow handler - this implements the clean recursive logic
+      const result = await this.processViewingProposal(
+        message.from,
+        suggestedDateTime,
+        senderInfo.propertyId,
+        { originalRequest, counterProposal: true }
+      );
+
+      console.log('Counter-proposal processed:', result);
+      return result;
+
+    } catch (error) {
+      console.error('Error handling counter-proposal:', error);
+      await localMessageService.sendMessage(
+        message.from,
+        "Sorry, there was an error processing your counter-proposal. Please try again."
+      );
+      return { message: 'Error processing counter-proposal' };
     }
   }
 
@@ -486,7 +572,7 @@ class ViewingService {
 
       // Check if it's a positive response to the alternative time
       const messageContent = message.content.toLowerCase().trim();
-      const isAccepted = ['yes', 'yeah', 'yep', 'ok', 'okay', 'confirmed', 'confirm', 'agreed', 'agree'].includes(messageContent);
+      const isAccepted = ['yes', 'yeah', 'yep', 'ok', 'okay', 'confirmed', 'confirm', 'agreed', 'agree', 'option_a', 'a'].includes(messageContent);
 
       if (!isAccepted) {
         return false; // Not accepting the alternative time
@@ -516,8 +602,13 @@ class ViewingService {
         calendarService.formatDateTime(alternativeSlot.dateTime)
       );
 
+      // Get the actual requesting party's role, then determine other party role
+      const requestingPartyRole = viewingRequest.requestedBy === 'partyA'
+        ? viewingRequest.property.partyA.role
+        : viewingRequest.property.partyB.role;
+
       const otherPartyRoleId = this.getOtherPartyRoleId(viewingRequest.property,
-        viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant',
+        requestingPartyRole,
         viewingRequest.property._id);
 
       await localMessageService.sendMessage(otherPartyRoleId, casualMessage);
@@ -533,9 +624,7 @@ class ViewingService {
         }
       );
 
-      console.log(`Alternative time forwarded to Party B: ${this.getOtherPartyRoleId(viewingRequest.property, 
-          viewingRequest.requestedBy === 'partyA' ? 'buyer' : 'tenant', 
-          viewingRequest.property._id)}`);
+      console.log(`Alternative time forwarded to Party B: ${otherPartyRoleId}`);
 
       // Confirm to Party A that we've sent the request
       await localMessageService.sendMessage(
@@ -591,14 +680,21 @@ class ViewingService {
 
   // Helper method to get the other party's role ID from a property
   getOtherPartyRoleId(property, currentRole, currentPropertyId) {
+    console.log(`getOtherPartyRoleId: currentRole="${currentRole}", partyA.role="${property.partyA.role}", partyB.role="${property.partyB.role}"`);
+
     if (currentRole === property.partyA.role) {
       // Current sender is Party A, so other party is Party B
-      return `${property.partyB.role}-${currentPropertyId}`;
+      const result = `${property.partyB.role}-${currentPropertyId}`;
+      console.log(`Returning Party B roleId: ${result}`);
+      return result;
     } else if (currentRole === property.partyB.role) {
       // Current sender is Party B, so other party is Party A
-      return `${property.partyA.role}-${currentPropertyId}`;
+      const result = `${property.partyA.role}-${currentPropertyId}`;
+      console.log(`Returning Party A roleId: ${result}`);
+      return result;
     }
-    
+
+    console.log(`No role match found, returning null`);
     return null;
   }
 
@@ -637,9 +733,83 @@ class ViewingService {
     } else if (role === property.partyB.role) {
       return 'partyB';
     }
-    
+
     // Default fallback
     return 'partyA';
+  }
+
+  // Complete viewing confirmation when final party confirms
+  async completeViewingConfirmation(confirmingUserId, confirmedDateTime, propertyId, viewingData) {
+    try {
+      console.log(`Completing viewing confirmation for property ${propertyId} at ${confirmedDateTime}`);
+
+      // Get property details
+      const property = await Property.findById(propertyId);
+      if (!property) {
+        console.error('Property not found for final confirmation');
+        return { success: false, message: 'Property not found' };
+      }
+
+      // Determine who confirmed and who needs to be notified
+      const confirmingUserInfo = this.parseRoleId(confirmingUserId);
+      const otherPartyRoleId = this.getOtherPartyRoleId(property, confirmingUserInfo.role, propertyId);
+
+      const confirmingParty = confirmingUserInfo.role === property.partyA.role ? property.partyA : property.partyB;
+      const otherParty = confirmingUserInfo.role === property.partyA.role ? property.partyB : property.partyA;
+
+      console.log(`${confirmingParty.name} (${confirmingUserInfo.role}) confirmed, notifying ${otherParty.name} (${otherParty.role})`);
+
+      // 1. Notify the other party about the confirmation
+      const confirmationNotification = `Great news! ${confirmingParty.name} has confirmed your viewing at ${property.address} on ${calendarService.formatDateTime(confirmedDateTime)}. You're all set!`;
+      await localMessageService.sendMessage(otherPartyRoleId, confirmationNotification);
+
+      // 2. Create Google Calendar event
+      const calendarEvent = await this.createCalendarEvent(property, confirmedDateTime, confirmingParty, otherParty);
+
+      // 3. Mark the other party's conversation as completed too
+      conversationStateService.setState(otherPartyRoleId, conversationStateService.constructor.STATES.COMPLETED);
+
+      console.log(`Viewing confirmation completed successfully. Calendar event: ${calendarEvent ? 'created' : 'failed'}`);
+
+      return {
+        success: true,
+        message: 'Viewing fully confirmed',
+        calendarEvent,
+        notifiedParty: otherPartyRoleId
+      };
+
+    } catch (error) {
+      console.error('Error completing viewing confirmation:', error);
+      return { success: false, message: 'Error completing confirmation', error: error.message };
+    }
+  }
+
+  // Create calendar event for confirmed viewing
+  async createCalendarEvent(property, dateTime, party1, party2) {
+    try {
+      const eventTitle = `Property Viewing - ${property.address}`;
+      const eventDescription = `Property viewing arranged between ${party1.name} (${party1.role}) and ${party2.name} (${party2.role})`;
+
+      // Use calendar service to create the event
+      const endTime = moment(dateTime).add(1, 'hour').toDate(); // 1 hour viewing
+      const attendees = [
+        party1.phone + '@example.com', // Mock email format
+        party2.phone + '@example.com'
+      ];
+
+      const calendarResult = await calendarService.createEvent(
+        eventTitle,
+        dateTime,
+        endTime,
+        eventDescription,
+        attendees
+      );
+
+      return calendarResult;
+    } catch (error) {
+      console.error('Error creating calendar event:', error);
+      return null;
+    }
   }
 }
 

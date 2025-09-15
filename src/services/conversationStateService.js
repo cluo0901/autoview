@@ -6,21 +6,18 @@ class ConversationStateService {
     this.conversationStates = new Map();
   }
 
-  // Conversation states
+  // Simplified conversation states - only 2 core states plus initial and completed
   static STATES = {
     WAITING_FOR_REQUEST: 'waiting_for_request',
-    WAITING_FOR_AVAILABILITY: 'waiting_for_availability',
-    WAITING_FOR_ALTERNATIVE_RESPONSE: 'waiting_for_alternative_response', 
-    WAITING_FOR_NEW_TIME: 'waiting_for_new_time',
+    WAITING_FOR_CONFIRMATION: 'waiting_for_confirmation', // After forwarding request to other party
+    WAITING_FOR_NEW_TIMING: 'waiting_for_new_timing', // After someone chooses "B" option
     COMPLETED: 'completed'
   };
 
-  // Multiple choice response patterns
+  // Multiple choice response patterns - simplified to A/B only
   static RESPONSE_PATTERNS = {
     OPTION_A: ['a)', 'a', 'option a', '1)', '1'],
-    OPTION_B: ['b)', 'b', 'option b', '2)', '2'],
-    OPTION_C: ['c)', 'c', 'option c', '3)', '3'],
-    OPTION_D: ['d)', 'd', 'option d', '4)', '4']
+    OPTION_B: ['b)', 'b', 'option b', '2)', '2']
   };
 
   // Get conversation state for a user
@@ -43,34 +40,22 @@ class ConversationStateService {
     });
   }
 
-  // Parse multiple choice response
+  // Parse multiple choice response - simplified to A/B only
   parseMultipleChoiceResponse(message) {
     const content = message.content.trim().toLowerCase();
-    
+
     // Check for Option A
-    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_A.some(pattern => 
+    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_A.some(pattern =>
         content.startsWith(pattern) || content === pattern)) {
       return 'option_a';
     }
-    
-    // Check for Option B  
+
+    // Check for Option B
     if (ConversationStateService.RESPONSE_PATTERNS.OPTION_B.some(pattern =>
         content.startsWith(pattern) || content === pattern)) {
       return 'option_b';
     }
-    
-    // Check for Option C
-    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_C.some(pattern =>
-        content.startsWith(pattern) || content === pattern)) {
-      return 'option_c';
-    }
-    
-    // Check for Option D
-    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_D.some(pattern =>
-        content.startsWith(pattern) || content === pattern)) {
-      return 'option_d';
-    }
-    
+
     return 'invalid_response';
   }
 
@@ -79,18 +64,16 @@ class ConversationStateService {
     return `Are you available for viewing at ${propertyAddress} on ${dateTime}?
 
 Please reply with:
-A) Yes, I'm available
-B) No, I'm not available
-C) I need a different time`;
+A) Confirmed
+B) I can't make it, and would like to propose a new timing`;
   }
 
   generateAlternativeTemplate(originalTime, alternativeTime) {
     return `I have a conflict at ${originalTime}. How about ${alternativeTime} instead?
 
 Please reply with:
-A) Yes, that time works for me
-B) No, I need a different time
-C) I'm no longer interested`;
+A) Ok
+B) I can't make it, and would like to propose a new timing`;
   }
 
   generateNewTimeTemplate() {
@@ -98,9 +81,7 @@ C) I'm no longer interested`;
 
 Please reply with:
 A) Morning (9 AM - 12 PM)
-B) Afternoon (1 PM - 5 PM) 
-C) Evening (6 PM - 8 PM)
-D) Let me suggest a specific time`;
+B) Let me suggest a specific time`;
   }
 
   generateConfirmationTemplate(propertyAddress, dateTime, recipientRole) {
@@ -112,25 +93,23 @@ D) Let me suggest a specific time`;
 
 Please reply with:
 A) Confirmed
-B) I need to reschedule`;
+B) I can't make it, and would like to propose a new timing`;
   }
 
   generateViewingRequestTemplate(requesterName, propertyAddress, dateTime) {
     return `${requesterName} wants to view your property at ${propertyAddress} on ${dateTime}.
 
 Please reply with:
-A) Yes, that time works for me
-B) No, I'm not available
-C) I need a different time`;
+A) Confirmed
+B) I can't make it, and would like to propose a new timing`;
   }
 
   generateAlternativeAcceptedTemplate(requesterName, propertyAddress, dateTime) {
     return `${requesterName} has accepted the new time for viewing your property at ${propertyAddress} on ${dateTime}.
 
 Please reply with:
-A) Confirmed, I'll be there
-B) Actually, I can't make that time
-C) I need to reschedule`;
+A) Confirmed
+B) I can't make it, and would like to propose a new timing`;
   }
 
   generateClarifyDateTimeTemplate() {
@@ -138,9 +117,7 @@ C) I need to reschedule`;
 
 Please reply with:
 A) Tomorrow morning (9 AM - 12 PM)
-B) Tomorrow afternoon (1 PM - 5 PM)
-C) Next week morning
-D) Let me specify a time`;
+B) Let me specify a time`;
   }
 
   generateAgentFullyBookedTemplate() {
@@ -148,27 +125,25 @@ D) Let me specify a time`;
 
 Please reply with:
 A) I'll call you today
-B) Send me your available times
-C) I'll find another agent`;
+B) I'll find another agent`;
   }
 
-  generateRequestForwardedTemplate(recipientName, dateTime) {
-    return `Your viewing request has been sent to ${recipientName} for ${dateTime}. You'll hear back shortly.
-
-Please reply with:
-A) Thank you
-B) I need to change the time
-C) Cancel this request`;
+  generateRequestForwardedTemplate(recipientName, dateTime, senderRole = null) {
+    // Role-aware messaging: buyers/tenants make viewing requests, sellers/landlords host viewings
+    if (senderRole === 'seller' || senderRole === 'landlord') {
+      return `Your proposed viewing time of ${dateTime} has been sent to ${recipientName}. You'll hear back shortly.`;
+    } else {
+      // Default for buyers/tenants
+      return `Your viewing request has been sent to ${recipientName} for ${dateTime}. You'll hear back shortly.`;
+    }
   }
 
   generateDeclineResponseTemplate() {
-    return `No problem! What time would work better for you?
+    return `No problem! Please suggest an alternative date and time that works for you.
 
-Please reply with:
-A) Morning (9 AM - 12 PM)
-B) Afternoon (1 PM - 5 PM)
-C) Evening (6 PM - 8 PM)
-D) Let me suggest a specific time`;
+For example: "Tomorrow at 10am" or "Next Tuesday at 3pm"
+
+The system will understand your preferred timing and coordinate with the other party.`;
   }
 
   generateDeclineNotificationTemplate(otherPartyName) {
@@ -176,8 +151,15 @@ D) Let me suggest a specific time`;
 
 Please reply with:
 A) I can be flexible with timing
-B) I need that specific time
-C) Cancel this request`;
+B) I need that specific time`;
+  }
+
+  generateCounterProposalTemplate(proposerName, propertyAddress, dateTime) {
+    return `${proposerName} has proposed a new time for the viewing at ${propertyAddress} on ${dateTime}.
+
+Please reply with:
+A) Confirmed
+B) I can't make it, and would like to propose a new timing`;
   }
 
   // Send template message and update state
@@ -186,7 +168,7 @@ C) Cancel this request`;
     this.setState(userId, newState, stateData, template);
   }
 
-  // Handle different response types based on current state
+  // Handle different response types based on simplified states
   async handleResponse(userId, message, currentState) {
     const response = this.parseMultipleChoiceResponse(message);
     const state = this.getState(userId);
@@ -194,106 +176,101 @@ C) Cancel this request`;
     console.log(`Handling response "${response}" for user ${userId} in state ${currentState.state}`);
 
     switch (currentState.state) {
-      case ConversationStateService.STATES.WAITING_FOR_AVAILABILITY:
-        return this.handleAvailabilityResponse(userId, response, state, message);
+      case ConversationStateService.STATES.WAITING_FOR_CONFIRMATION:
+        return this.handleConfirmationResponse(userId, response, state, message);
 
-      case ConversationStateService.STATES.WAITING_FOR_ALTERNATIVE_RESPONSE:
-        return this.handleAlternativeResponse(userId, response, state, message);
-
-      case ConversationStateService.STATES.WAITING_FOR_NEW_TIME:
-        return this.handleNewTimeResponse(userId, response, state, message);
+      case ConversationStateService.STATES.WAITING_FOR_NEW_TIMING:
+        return this.handleNewTimingResponse(userId, response, state, message);
 
       default:
         return this.handleInvalidState(userId, response, state);
     }
   }
 
-  async handleAvailabilityResponse(userId, response, state, message) {
+  // Simplified handler for confirmation responses (A/B only)
+  async handleConfirmationResponse(userId, response, state, message) {
     switch (response) {
-      case 'option_a': // Yes, available
-        await localMessageService.sendMessage(userId, "Great! Your viewing is confirmed. Details will be sent shortly.");
-        this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'confirmed', userId };
-        
-      case 'option_b': // No, not available
-        const newTimeTemplate = this.generateNewTimeTemplate();
-        await this.sendTemplateAndUpdateState(userId, newTimeTemplate, 
-          ConversationStateService.STATES.WAITING_FOR_NEW_TIME);
-        return { action: 'declined', userId };
-        
-      case 'option_c': // Need different time
-        const altTimeTemplate = this.generateNewTimeTemplate();
-        await this.sendTemplateAndUpdateState(userId, altTimeTemplate,
-          ConversationStateService.STATES.WAITING_FOR_NEW_TIME);
-        return { action: 'needs_different_time', userId };
-        
-      default:
-        return this.handleInvalidResponse(userId, state);
-    }
-  }
+      case 'option_a': // Confirmed
+        // Check if this is accepting an agent-proposed alternative time
+        if (state.data && state.data.alternativeDateTime) {
+          // This is accepting an alternative time proposed by the agent
+          // Forward the accepted alternative time to the other party via central flow
+          console.log(`User ${userId} accepted alternative time ${state.data.alternativeDateTime}, forwarding to other party`);
 
-  async handleAlternativeResponse(userId, response, state, message) {
-    switch (response) {
-      case 'option_a': // Yes, alternative time works
-        // Import viewing service to handle the alternative acceptance
-        const viewingService = require('./viewingService');
+          // Use the viewing service to forward the accepted alternative time
+          const viewingService = require('./viewingService');
+          const result = await viewingService.processViewingProposal(
+            userId,
+            state.data.alternativeDateTime,
+            state.data.propertyId,
+            state.data.originalRequestData
+          );
 
-        // Use the existing handlePartyAAlternativeResponse method
-        const result = await viewingService.handlePartyAAlternativeResponse({
-          from: userId,
-          content: 'option_a'
-        });
-
-        if (result && result.success) {
-          this.setState(userId, ConversationStateService.STATES.COMPLETED);
-          return { action: 'alternative_accepted', userId };
+          return { action: 'alternative_accepted_and_forwarded', userId, result };
         } else {
-          await localMessageService.sendMessage(userId, "Sorry, there was an issue processing your response. Please try again.");
-          return { action: 'error', userId };
+          // This is a final confirmation (e.g., landlord confirming the viewing)
+          console.log(`Final confirmation from ${userId}, completing viewing arrangement`);
+
+          // Get the viewing details from the state
+          const viewingData = state.data;
+
+          if (viewingData && viewingData.propertyId && viewingData.proposedDateTime) {
+            // Use the viewing service to complete the confirmation flow
+            const viewingService = require('./viewingService');
+            const result = await viewingService.completeViewingConfirmation(
+              userId,
+              viewingData.proposedDateTime,
+              viewingData.propertyId,
+              viewingData
+            );
+
+            await localMessageService.sendMessage(userId, "Great! Your viewing is confirmed. Details will be sent shortly.");
+            this.setState(userId, ConversationStateService.STATES.COMPLETED);
+            return { action: 'viewing_fully_confirmed', userId, result };
+          } else {
+            // Fallback for incomplete data
+            await localMessageService.sendMessage(userId, "Great! Your viewing is confirmed. Details will be sent shortly.");
+            this.setState(userId, ConversationStateService.STATES.COMPLETED);
+            return { action: 'confirmed', userId };
+          }
         }
 
-      case 'option_b': // No, need different time
-        const newTimeTemplate = this.generateNewTimeTemplate();
-        await this.sendTemplateAndUpdateState(userId, newTimeTemplate,
-          ConversationStateService.STATES.WAITING_FOR_NEW_TIME);
-        return { action: 'needs_different_time', userId };
-
-      case 'option_c': // No longer interested
-        await localMessageService.sendMessage(userId, "Understood. Thank you for letting us know.");
-        this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'cancelled', userId };
+      case 'option_b': // I can't make it, propose new timing
+        const declineTemplate = this.generateDeclineResponseTemplate();
+        await localMessageService.sendMessage(userId, declineTemplate);
+        this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST, {
+          isCounterProposal: true,
+          originalRequest: state.data
+        });
+        return { action: 'needs_new_timing', userId };
 
       default:
         return this.handleInvalidResponse(userId, state);
     }
   }
 
-  async handleNewTimeResponse(userId, response, state, message) {
+  // Simplified handler for new timing responses
+  async handleNewTimingResponse(userId, response, state, message) {
     switch (response) {
-      case 'option_a': // Morning
-        await localMessageService.sendMessage(userId, "Thanks! I'll check morning availability and get back to you.");
+      case 'option_a': // Morning or general positive response
+        await localMessageService.sendMessage(userId, "Thanks! I'll check availability and coordinate with the other party.");
         this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'prefers_morning', userId };
-        
-      case 'option_b': // Afternoon  
-        await localMessageService.sendMessage(userId, "Thanks! I'll check afternoon availability and get back to you.");
-        this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'prefers_afternoon', userId };
-        
-      case 'option_c': // Evening
-        await localMessageService.sendMessage(userId, "Thanks! I'll check evening availability and get back to you.");
-        this.setState(userId, ConversationStateService.STATES.COMPLETED);
-        return { action: 'prefers_evening', userId };
-        
-      case 'option_d': // Specific time
+        return { action: 'timing_preference_noted', userId };
+
+      case 'option_b': // Let me specify a time / I can't make it
         await localMessageService.sendMessage(userId, "Please tell me your preferred date and time (e.g., 'Monday 3pm'):");
-        this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST);
-        return { action: 'will_specify_time', userId };
-        
+        this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST, {
+          isCounterProposal: true,
+          originalRequest: state.data
+        });
+        return { action: 'waiting_for_specific_time', userId };
+
       default:
         return this.handleInvalidResponse(userId, state);
     }
   }
+
+  // This method is now replaced by handleNewTimingResponse above
 
   async handleInvalidResponse(userId, state) {
     await localMessageService.sendMessage(userId, 
