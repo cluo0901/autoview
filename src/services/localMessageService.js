@@ -10,10 +10,16 @@ class LocalMessageService {
         id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         from: from,
         to: to,
-        content: message,
+        content: typeof message === 'string' ? message : message.text,
         timestamp: new Date(),
         type: 'outbound'
       };
+
+      // Add selection options if provided
+      if (typeof message === 'object' && message.options) {
+        messageObj.options = message.options;
+        messageObj.messageType = 'selection';
+      }
 
       this.messages.push(messageObj);
       

@@ -14,10 +14,19 @@ class ConversationStateService {
     COMPLETED: 'completed'
   };
 
-  // Multiple choice response patterns - simplified to A/B only
+  // Multiple choice response patterns - include actual label text and legacy A/B patterns
   static RESPONSE_PATTERNS = {
-    OPTION_A: ['a)', 'a', 'option a', '1)', '1'],
-    OPTION_B: ['b)', 'b', 'option b', '2)', '2']
+    OPTION_A: [
+      'a)', 'a', 'option a', '1)', '1',
+      'confirmed', 'ok', 'yes', 'i\'ll call you today',
+      'morning (9 am - 12 pm)', 'i can be flexible with timing'
+    ],
+    OPTION_B: [
+      'b)', 'b', 'option b', '2)', '2',
+      'i can\'t make it, and would like to propose a new timing',
+      'let me suggest a specific time', 'i need that specific time',
+      'let me specify a time', 'i\'ll find another agent'
+    ]
   };
 
   // Get conversation state for a user
@@ -61,27 +70,33 @@ class ConversationStateService {
 
   // Generate multiple choice templates
   generateAvailabilityTemplate(propertyAddress, dateTime) {
-    return `Are you available for viewing at ${propertyAddress} on ${dateTime}?
-
-Please reply with:
-A) Confirmed
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `Are you available for viewing at ${propertyAddress} on ${dateTime}?`,
+      options: [
+        { id: 'option_a', label: 'Confirmed', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   generateAlternativeTemplate(originalTime, alternativeTime) {
-    return `I have a conflict at ${originalTime}. How about ${alternativeTime} instead?
-
-Please reply with:
-A) Ok
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `I have a conflict at ${originalTime}. How about ${alternativeTime} instead?`,
+      options: [
+        { id: 'option_a', label: 'Ok', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   generateNewTimeTemplate() {
-    return `What time would work better for you?
-
-Please reply with:
-A) Morning (9 AM - 12 PM)
-B) Let me suggest a specific time`;
+    return {
+      text: `What time would work better for you?`,
+      options: [
+        { id: 'option_a', label: 'Morning (9 AM - 12 PM)', value: 'A' },
+        { id: 'option_b', label: 'Let me suggest a specific time', value: 'B' }
+      ]
+    };
   }
 
   generateConfirmationTemplate(propertyAddress, dateTime, recipientRole) {
@@ -89,43 +104,53 @@ B) Let me suggest a specific time`;
       "You're all set for your viewing" :
       "You're scheduled to show your property";
 
-    return `${roleText} at ${propertyAddress} on ${dateTime}.
-
-Please reply with:
-A) Confirmed
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `${roleText} at ${propertyAddress} on ${dateTime}.`,
+      options: [
+        { id: 'option_a', label: 'Confirmed', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   generateViewingRequestTemplate(requesterName, propertyAddress, dateTime) {
-    return `${requesterName} wants to view your property at ${propertyAddress} on ${dateTime}.
-
-Please reply with:
-A) Confirmed
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `${requesterName} wants to view your property at ${propertyAddress} on ${dateTime}.`,
+      options: [
+        { id: 'option_a', label: 'Confirmed', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   generateAlternativeAcceptedTemplate(requesterName, propertyAddress, dateTime) {
-    return `${requesterName} has accepted the new time for viewing your property at ${propertyAddress} on ${dateTime}.
-
-Please reply with:
-A) Confirmed
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `${requesterName} has accepted the new time for viewing your property at ${propertyAddress} on ${dateTime}.`,
+      options: [
+        { id: 'option_a', label: 'Confirmed', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   generateClarifyDateTimeTemplate() {
-    return `Please specify the date and time you'd like to view the property. For example: "tomorrow at 2pm" or "next Monday at 10am".
-
-Please reply with:
-A) Tomorrow morning (9 AM - 12 PM)
-B) Let me specify a time`;
+    return {
+      text: `Please specify the date and time you'd like to view the property. For example: "tomorrow at 2pm" or "next Monday at 10am".`,
+      options: [
+        { id: 'option_a', label: 'Tomorrow morning (9 AM - 12 PM)', value: 'A' },
+        { id: 'option_b', label: 'Let me specify a time', value: 'B' }
+      ]
+    };
   }
 
   generateAgentFullyBookedTemplate() {
-    return `I'm completely booked for the next few weeks. Please call me directly to find an available time.
-
-Please reply with:
-A) I'll call you today
-B) I'll find another agent`;
+    return {
+      text: `I'm completely booked for the next few weeks. Please call me directly to find an available time.`,
+      options: [
+        { id: 'option_a', label: "I'll call you today", value: 'A' },
+        { id: 'option_b', label: "I'll find another agent", value: 'B' }
+      ]
+    };
   }
 
   generateRequestForwardedTemplate(recipientName, dateTime, senderRole = null) {
@@ -147,19 +172,23 @@ The system will understand your preferred timing and coordinate with the other p
   }
 
   generateDeclineNotificationTemplate(otherPartyName) {
-    return `${otherPartyName} is not available for the requested viewing time and is asking for alternatives.
-
-Please reply with:
-A) I can be flexible with timing
-B) I need that specific time`;
+    return {
+      text: `${otherPartyName} is not available for the requested viewing time and is asking for alternatives.`,
+      options: [
+        { id: 'option_a', label: 'I can be flexible with timing', value: 'A' },
+        { id: 'option_b', label: 'I need that specific time', value: 'B' }
+      ]
+    };
   }
 
   generateCounterProposalTemplate(proposerName, propertyAddress, dateTime) {
-    return `${proposerName} has proposed a new time for the viewing at ${propertyAddress} on ${dateTime}.
-
-Please reply with:
-A) Confirmed
-B) I can't make it, and would like to propose a new timing`;
+    return {
+      text: `${proposerName} has proposed a new time for the viewing at ${propertyAddress} on ${dateTime}.`,
+      options: [
+        { id: 'option_a', label: 'Confirmed', value: 'A' },
+        { id: 'option_b', label: "I can't make it, and would like to propose a new timing", value: 'B' }
+      ]
+    };
   }
 
   // Send template message and update state

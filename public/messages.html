@@ -313,6 +313,37 @@
             padding: 40px 20px;
         }
 
+        .selection-options {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .selection-option {
+            padding: 8px 12px;
+            border: 1px solid rgba(0, 123, 255, 0.3);
+            border-radius: 20px;
+            background: rgba(0, 123, 255, 0.1);
+            color: #007bff;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 13px;
+            font-weight: 500;
+            text-align: left;
+        }
+
+        .selection-option:hover {
+            background: rgba(0, 123, 255, 0.2);
+            border-color: rgba(0, 123, 255, 0.5);
+            transform: translateX(2px);
+        }
+
+        .selection-option:active {
+            transform: translateX(1px);
+            background: rgba(0, 123, 255, 0.3);
+        }
+
         @media (max-width: 768px) {
             .message-area {
                 grid-template-columns: 1fr;

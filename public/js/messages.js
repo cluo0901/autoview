@@ -48,6 +48,15 @@ class MessageSimulator {
 
         // Auto-refresh messages every 5 seconds
         setInterval(() => this.loadMessages(), 5000);
+
+        // Add event delegation for selection option buttons
+        this.conversationView.addEventListener('click', (e) => {
+            if (e.target.classList.contains('selection-option')) {
+                const selectedValue = e.target.getAttribute('data-value');
+                const messageId = e.target.getAttribute('data-message-id');
+                this.handleSelectionClick(selectedValue, messageId);
+            }
+        });
     }
 
     async loadKnownRoles() {
@@ -272,14 +281,16 @@ class MessageSimulator {
         const isSentByUser = message.from === currentUser;
         const messageClass = isSentByUser ? 'sent' : 'received';
         const timestamp = new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        
+
         // System messages (from 'system' to user or vice versa)
         if (message.from === 'system' || message.to === 'system') {
             if (message.from === 'system') {
-                // System response - show as received
+                // System response - show as received with optional selection buttons
+                const optionsHtml = this.renderSelectionOptions(message);
                 return `
                     <div class="message received">
                         <div class="message-content">${this.escapeHtml(message.content)}</div>
+                        ${optionsHtml}
                         <div class="message-meta">${timestamp}</div>
                     </div>
                 `;
@@ -293,10 +304,12 @@ class MessageSimulator {
                 `;
             }
         }
-        
+
+        const optionsHtml = this.renderSelectionOptions(message);
         return `
             <div class="message ${messageClass}">
                 <div class="message-content">${this.escapeHtml(message.content)}</div>
+                ${optionsHtml}
                 <div class="message-meta">${timestamp}</div>
             </div>
         `;
@@ -398,6 +411,47 @@ class MessageSimulator {
                 document.body.removeChild(notification);
             }, 300);
         }, 3000);
+    }
+
+    renderSelectionOptions(message) {
+        // Check if message has options for selection
+        if (!message.options || !Array.isArray(message.options) || message.options.length === 0) {
+            return '';
+        }
+
+        const optionsHtml = message.options.map(option => `
+            <button class="selection-option"
+                    data-value="${this.escapeHtml(option.value)}"
+                    data-message-id="${message.id}">
+                ${this.escapeHtml(option.label)}
+            </button>
+        `).join('');
+
+        return `<div class="selection-options">${optionsHtml}</div>`;
+    }
+
+    handleSelectionClick(selectedValue, messageId) {
+        // Send the selected value as a message
+        if (this.currentSender) {
+            // Get the actual label text from the button that was clicked
+            const clickedButton = document.querySelector(`[data-value="${selectedValue}"][data-message-id="${messageId}"]`);
+            const labelText = clickedButton ? clickedButton.textContent.trim() : selectedValue;
+
+            // Simulate typing the selected label text
+            this.messageInput.value = labelText;
+            this.sendMessage();
+
+            // Hide the selection options for this message to prevent multiple selections
+            const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+            if (messageElement) {
+                const optionsContainer = messageElement.closest('.message').querySelector('.selection-options');
+                if (optionsContainer) {
+                    optionsContainer.style.display = 'none';
+                }
+            }
+        } else {
+            this.showError('Please select a role first');
+        }
     }
 
     escapeHtml(text) {
