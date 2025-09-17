@@ -11,7 +11,7 @@ const debugRoutes = require('./routes/debug');
 const messageRoutes = require('./routes/messages');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // Middleware - disable helmet for now to debug
 // app.use(helmet());

@@ -433,12 +433,12 @@ class MessageSimulator {
     handleSelectionClick(selectedValue, messageId) {
         // Send the selected value as a message
         if (this.currentSender) {
-            // Get the actual label text from the button that was clicked
+            // Find the clicked button to get its label text for better UX
             const clickedButton = document.querySelector(`[data-value="${selectedValue}"][data-message-id="${messageId}"]`);
-            const labelText = clickedButton ? clickedButton.textContent.trim() : selectedValue;
+            const displayText = clickedButton ? clickedButton.textContent.trim() : selectedValue;
 
-            // Simulate typing the selected label text
-            this.messageInput.value = labelText;
+            // Send the display text for better UX, but the backend will parse it properly
+            this.messageInput.value = `${displayText} (${selectedValue})`;
             this.sendMessage();
 
             // Hide the selection options for this message to prevent multiple selections

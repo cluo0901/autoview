@@ -26,6 +26,19 @@ class ConversationStateService {
       'i can\'t make it, and would like to propose a new timing',
       'let me suggest a specific time', 'i need that specific time',
       'let me specify a time', 'i\'ll find another agent'
+    ],
+    OPTION_C: [
+      'c)', 'c', 'option c', '3)', '3',
+      'i can\'t make any of these times', 'none of these work for me'
+    ],
+    OPTION_D: [
+      'd)', 'd', 'option d', '4)', '4'
+    ],
+    OPTION_E: [
+      'e)', 'e', 'option e', '5)', '5'
+    ],
+    OPTION_F: [
+      'f)', 'f', 'option f', '6)', '6'
     ]
   };
 
@@ -49,20 +62,26 @@ class ConversationStateService {
     });
   }
 
-  // Parse multiple choice response - simplified to A/B only
+  // Parse multiple choice response - supports A through F options
   parseMultipleChoiceResponse(message) {
     const content = message.content.trim().toLowerCase();
 
-    // Check for Option A
-    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_A.some(pattern =>
-        content.startsWith(pattern) || content === pattern)) {
-      return 'option_a';
+    // First check for new format with parentheses like "Tomorrow 4pm (B)"
+    const parenthesesMatch = content.match(/\(([a-f])\)$/);
+    if (parenthesesMatch) {
+      const letter = parenthesesMatch[1].toUpperCase();
+      return `option_${letter.toLowerCase()}`;
     }
 
-    // Check for Option B
-    if (ConversationStateService.RESPONSE_PATTERNS.OPTION_B.some(pattern =>
-        content.startsWith(pattern) || content === pattern)) {
-      return 'option_b';
+    // Check each option pattern in order (original logic)
+    const optionKeys = ['OPTION_A', 'OPTION_B', 'OPTION_C', 'OPTION_D', 'OPTION_E', 'OPTION_F'];
+
+    for (const optionKey of optionKeys) {
+      const patterns = ConversationStateService.RESPONSE_PATTERNS[optionKey];
+      if (patterns && patterns.some(pattern =>
+          content.startsWith(pattern) || content === pattern)) {
+        return optionKey.toLowerCase();
+      }
     }
 
     return 'invalid_response';
@@ -191,6 +210,82 @@ The system will understand your preferred timing and coordinate with the other p
     };
   }
 
+  // Multiple-option template methods for when users provide multiple time choices
+  generateMultipleTimeProposalTemplate(propertyAddress, timeOptions) {
+    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = timeOptions.slice(0, 6).map((timeOption, index) => ({
+      id: `option_${optionLetters[index].toLowerCase()}`,
+      label: timeOption.display,
+      value: optionLetters[index],
+      datetime: timeOption.datetime
+    }));
+
+    // Add "None of these work" option
+    const nextLetter = optionLetters[options.length];
+    if (nextLetter) {
+      options.push({
+        id: `option_${nextLetter.toLowerCase()}`,
+        label: "None of these work for me",
+        value: nextLetter
+      });
+    }
+
+    return {
+      text: `You have multiple time options to view ${propertyAddress}. Which time works best for you?`,
+      options
+    };
+  }
+
+  generateMultipleAlternativeTemplate(originalTime, alternativeOptions) {
+    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = alternativeOptions.slice(0, 5).map((timeOption, index) => ({
+      id: `option_${optionLetters[index].toLowerCase()}`,
+      label: timeOption.display,
+      value: optionLetters[index],
+      datetime: timeOption.datetime
+    }));
+
+    // Add "None of these work" option
+    const nextLetter = optionLetters[options.length];
+    if (nextLetter) {
+      options.push({
+        id: `option_${nextLetter.toLowerCase()}`,
+        label: "I can't make any of these times",
+        value: nextLetter
+      });
+    }
+
+    return {
+      text: `I have a conflict at ${originalTime}. How about one of these times instead?`,
+      options
+    };
+  }
+
+  generateMultipleCounterProposalTemplate(proposerName, propertyAddress, timeOptions) {
+    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = timeOptions.slice(0, 5).map((timeOption, index) => ({
+      id: `option_${optionLetters[index].toLowerCase()}`,
+      label: timeOption.display,
+      value: optionLetters[index],
+      datetime: timeOption.datetime
+    }));
+
+    // Add "None of these work" option
+    const nextLetter = optionLetters[options.length];
+    if (nextLetter) {
+      options.push({
+        id: `option_${nextLetter.toLowerCase()}`,
+        label: "I can't make any of these times",
+        value: nextLetter
+      });
+    }
+
+    return {
+      text: `${proposerName} has requested to view ${propertyAddress} and provided multiple time options. Which time works for you to show the property?`,
+      options
+    };
+  }
+
   // Send template message and update state
   async sendTemplateAndUpdateState(userId, template, newState, stateData = {}) {
     await localMessageService.sendMessage(userId, template);
@@ -216,7 +311,7 @@ The system will understand your preferred timing and coordinate with the other p
     }
   }
 
-  // Simplified handler for confirmation responses (A/B only)
+  // Simplified handler for confirmation responses (A/B/C/D/E/F)
   async handleConfirmationResponse(userId, response, state, message) {
     switch (response) {
       case 'option_a': // Confirmed
@@ -236,6 +331,10 @@ The system will understand your preferred timing and coordinate with the other p
           );
 
           return { action: 'alternative_accepted_and_forwarded', userId, result };
+        } else if (state.data && state.data.multipleTimeOptions) {
+          // This is selecting the first option from multiple time proposals
+          const selectedOption = state.data.multipleTimeOptions[0];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
         } else {
           // This is a final confirmation (e.g., landlord confirming the viewing)
           console.log(`Final confirmation from ${userId}, completing viewing arrangement`);
@@ -264,14 +363,60 @@ The system will understand your preferred timing and coordinate with the other p
           }
         }
 
-      case 'option_b': // I can't make it, propose new timing
-        const declineTemplate = this.generateDeclineResponseTemplate();
-        await localMessageService.sendMessage(userId, declineTemplate);
-        this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST, {
-          isCounterProposal: true,
-          originalRequest: state.data
-        });
-        return { action: 'needs_new_timing', userId };
+      case 'option_b': // I can't make it, propose new timing OR second option from multiple choices
+        if (state.data && state.data.multipleTimeOptions && state.data.multipleTimeOptions.length > 1) {
+          // This is selecting the second option from multiple time proposals
+          const selectedOption = state.data.multipleTimeOptions[1];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
+        } else {
+          // Standard decline response
+          const declineTemplate = this.generateDeclineResponseTemplate();
+          await localMessageService.sendMessage(userId, declineTemplate);
+          this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST, {
+            isCounterProposal: true,
+            originalRequest: state.data
+          });
+          return { action: 'needs_new_timing', userId };
+        }
+
+      case 'option_c': // Third option from multiple choices OR none of these work
+        if (state.data && state.data.multipleTimeOptions && state.data.multipleTimeOptions.length > 2) {
+          const selectedOption = state.data.multipleTimeOptions[2];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
+        } else {
+          // None of these work
+          const declineTemplate = this.generateDeclineResponseTemplate();
+          await localMessageService.sendMessage(userId, declineTemplate);
+          this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST, {
+            isCounterProposal: true,
+            originalRequest: state.data
+          });
+          return { action: 'needs_new_timing', userId };
+        }
+
+      case 'option_d': // Fourth option from multiple choices
+        if (state.data && state.data.multipleTimeOptions && state.data.multipleTimeOptions.length > 3) {
+          const selectedOption = state.data.multipleTimeOptions[3];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
+        } else {
+          return this.handleInvalidResponse(userId, state);
+        }
+
+      case 'option_e': // Fifth option from multiple choices
+        if (state.data && state.data.multipleTimeOptions && state.data.multipleTimeOptions.length > 4) {
+          const selectedOption = state.data.multipleTimeOptions[4];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
+        } else {
+          return this.handleInvalidResponse(userId, state);
+        }
+
+      case 'option_f': // Sixth option from multiple choices
+        if (state.data && state.data.multipleTimeOptions && state.data.multipleTimeOptions.length > 5) {
+          const selectedOption = state.data.multipleTimeOptions[5];
+          return this.handleMultipleTimeSelection(userId, selectedOption, state);
+        } else {
+          return this.handleInvalidResponse(userId, state);
+        }
 
       default:
         return this.handleInvalidResponse(userId, state);
@@ -313,6 +458,85 @@ The system will understand your preferred timing and coordinate with the other p
       "I'm not sure how to help with that right now. Please start with a viewing request.");
     this.setState(userId, ConversationStateService.STATES.WAITING_FOR_REQUEST);
     return { action: 'reset_state', userId };
+  }
+
+  // Handle multiple time option selection
+  async handleMultipleTimeSelection(userId, selectedOption, state) {
+    try {
+      console.log(`User ${userId} selected time option:`, selectedOption);
+
+      // Parse the selected datetime
+      const selectedDateTime = new Date(selectedOption.datetime);
+      if (isNaN(selectedDateTime.getTime())) {
+        throw new Error(`Invalid selected datetime: ${selectedOption.datetime}`);
+      }
+
+      // IMPORTANT: Check if this is a seller/landlord accepting buyer's/tenant's originally proposed time
+      // In this case, both parties have now agreed - we should immediately confirm the viewing
+      const viewingService = require('./viewingService');
+      const senderInfo = await viewingService.parseRoleId(userId);
+
+      if (senderInfo && (senderInfo.role === 'seller' || senderInfo.role === 'landlord')) {
+        // This is a seller/landlord accepting one of the buyer's/tenant's proposed times
+        // Both parties have now agreed - immediately confirm the viewing
+        console.log(`Seller/landlord ${userId} accepted buyer's proposed time - immediately confirming viewing`);
+
+        const property = await require('../models/Property').findById(state.data.propertyId);
+        if (!property) {
+          throw new Error('Property not found');
+        }
+
+        // Get the original requester (the other party)
+        const originalRequester = viewingService.getOtherPartyRoleId(property, senderInfo.role, property._id);
+
+        // Send confirmation to both parties
+        const formatDateTime = require('moment-timezone')(selectedDateTime).tz('Asia/Singapore').format('dddd, MMMM Do, h:mm A');
+
+        // Confirm to seller/landlord
+        await localMessageService.sendMessage(userId,
+          `Perfect! Your viewing is confirmed for ${formatDateTime} at ${property.address}. The buyer will be there to view the property.`);
+
+        // Confirm to buyer/tenant
+        await localMessageService.sendMessage(originalRequester,
+          `Great news! Your viewing is confirmed for ${formatDateTime} at ${property.address}. The seller will show you the property.`);
+
+        // Create calendar event
+        try {
+          const calendarEvent = await viewingService.createCalendarEvent(property, selectedDateTime, senderInfo, {
+            roleId: originalRequester,
+            name: senderInfo.role === 'seller' ? 'Buyer' : 'Tenant', // Get proper name if available
+            role: senderInfo.role === 'seller' ? 'buyer' : 'tenant'
+          });
+          console.log(`Calendar event created for multiple time selection: ${calendarEvent ? 'success' : 'failed'}`);
+        } catch (error) {
+          console.error('Error creating calendar event for multiple time selection:', error);
+        }
+
+        // Update conversation states to completed
+        this.setState(userId, ConversationStateService.STATES.COMPLETED);
+        this.setState(originalRequester, ConversationStateService.STATES.COMPLETED);
+
+        return { action: 'viewing_immediately_confirmed', userId, selectedOption, confirmedDateTime: selectedDateTime };
+      }
+
+      // For all other cases (buyer selecting from multiple options, or other scenarios),
+      // use the normal flow to forward to the other party
+      const result = await viewingService.processViewingProposal(
+        userId,
+        selectedDateTime,
+        state.data.propertyId,
+        state.data.originalRequestData || {}
+      );
+
+      console.log('Multiple time selection processed:', result);
+      return { action: 'multiple_time_selected_and_forwarded', userId, selectedOption, result };
+
+    } catch (error) {
+      console.error('Error handling multiple time selection:', error);
+      await localMessageService.sendMessage(userId,
+        'Sorry, there was an error processing your time selection. Please try again.');
+      return { action: 'error', userId, error: error.message };
+    }
   }
 
   // Clear state for a user (useful for testing)

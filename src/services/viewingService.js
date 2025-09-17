@@ -69,7 +69,7 @@ class ViewingService {
 
   async forwardToOtherParty(sender, proposedDateTime, property, originalRequestData) {
     // Determine who the other party is
-    const senderInfo = this.parseRoleId(sender);
+    const senderInfo = await this.parseRoleId(sender);
     const otherPartyRoleId = this.getOtherPartyRoleId(property, senderInfo.role, property._id);
     const otherParty = senderInfo.role === property.partyA.role ? property.partyB : property.partyA;
     const senderName = senderInfo.role === property.partyA.role ? property.partyA.name : property.partyB.name;
@@ -129,31 +129,58 @@ class ViewingService {
   }
 
   async proposeAlternativeTime(sender, proposedDateTime, property, originalRequestData) {
-    const nextSlot = await calendarService.findNextAvailableSlot(proposedDateTime);
+    // Find multiple available slots to give user options
+    const availableSlots = await calendarService.findMultipleAvailableSlots(proposedDateTime, 3);
 
-    if (nextSlot) {
-      // Send alternative time proposal with A/B options (Ok / Can't make it)
-      const alternativeMessage = conversationStateService.generateAlternativeTemplate(
-        calendarService.formatDateTime(proposedDateTime),
-        calendarService.formatDateTime(nextSlot)
-      );
+    if (availableSlots && availableSlots.length > 0) {
+      if (availableSlots.length === 1) {
+        // Single alternative - use existing template
+        const alternativeMessage = conversationStateService.generateAlternativeTemplate(
+          calendarService.formatDateTime(proposedDateTime),
+          calendarService.formatDateTime(availableSlots[0])
+        );
 
-      await localMessageService.sendMessage(sender, alternativeMessage);
+        await localMessageService.sendMessage(sender, alternativeMessage);
 
-      // Set conversation state - waiting for confirmation of alternative (A/B)
-      // Include proposal attempt count for tracking
-      conversationStateService.setState(sender,
-        conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
-        {
-          propertyId: property._id,
-          originalDateTime: proposedDateTime,
-          alternativeDateTime: nextSlot,
-          originalRequestData: originalRequestData,
-          proposalAttempts: originalRequestData?.proposalAttempts || 0
-        }
-      );
+        // Set conversation state - waiting for confirmation of alternative (A/B)
+        conversationStateService.setState(sender,
+          conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+          {
+            propertyId: property._id,
+            originalDateTime: proposedDateTime,
+            alternativeDateTime: availableSlots[0],
+            originalRequestData: originalRequestData,
+            proposalAttempts: originalRequestData?.proposalAttempts || 0
+          }
+        );
+      } else {
+        // Multiple alternatives - use new multiple options template
+        const timeOptions = availableSlots.map(slot => ({
+          datetime: slot.toISOString(),
+          display: calendarService.formatDateTime(slot)
+        }));
 
-      return { success: true, message: 'Alternative time proposed' };
+        const multipleAlternativeMessage = conversationStateService.generateMultipleAlternativeTemplate(
+          calendarService.formatDateTime(proposedDateTime),
+          timeOptions
+        );
+
+        await localMessageService.sendMessage(sender, multipleAlternativeMessage);
+
+        // Set conversation state - waiting for confirmation of one of the alternatives
+        conversationStateService.setState(sender,
+          conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+          {
+            propertyId: property._id,
+            originalDateTime: proposedDateTime,
+            alternativeOptions: timeOptions,
+            originalRequestData: originalRequestData,
+            proposalAttempts: originalRequestData?.proposalAttempts || 0
+          }
+        );
+      }
+
+      return { success: true, message: 'Alternative time(s) proposed' };
     } else {
       // Agent fully booked
       const noAvailabilityMessage = conversationStateService.generateAgentFullyBookedTemplate();
@@ -176,7 +203,7 @@ class ViewingService {
   async handleViewingRequest(message, aiAnalysis = null) {
     try {
       // Extract role and property from sender ID (e.g., "buyer-property123")
-      const senderInfo = this.parseRoleId(message.from);
+      const senderInfo = await this.parseRoleId(message.from);
       if (!senderInfo) {
         await localMessageService.sendMessage(
           message.from,
@@ -201,9 +228,69 @@ class ViewingService {
       const properties = [property];
       const aiAnalysisResult = await aiService.analyzeMessage(message.content, { properties });
 
-      // Extract and parse the proposed date/time
+
+      // Check if user provided multiple time options
+      if (aiAnalysisResult.dateTime.hasMultiple && aiAnalysisResult.dateTime.options && aiAnalysisResult.dateTime.options.length > 0) {
+        console.log(`Multiple time options detected via hasMultiple: ${aiAnalysisResult.dateTime.options.length} options`);
+        return this.handleMultipleTimeProposal(message.from, property, aiAnalysisResult.dateTime.options, { originalMessage: message });
+      }
+
+
+      // Extract and parse the proposed date/time (single time)
       let proposedDateTime = null;
+
+      // IMPORTANT: Check for multiple times BEFORE attempting single-time parsing
       if (aiAnalysisResult.dateTime.extracted) {
+        // Handle array format first
+        if (Array.isArray(aiAnalysisResult.dateTime.extracted)) {
+          console.log('Detected array of times in extracted field, parsing as multiple options');
+          const timeOptions = aiAnalysisResult.dateTime.extracted.map((timeStr, index) => ({
+            datetime: timeStr,
+            display: `Option ${index + 1}: ${moment.tz(timeStr, 'Asia/Singapore').format('dddd, MMMM Do, h:mm A')}`
+          }));
+          console.log(`Parsed ${timeOptions.length} time options from array`);
+          return this.handleMultipleTimeProposal(message.from, property, timeOptions, { originalMessage: message });
+        }
+        // Handle comma-separated string format next
+        else if (typeof aiAnalysisResult.dateTime.extracted === 'string' && aiAnalysisResult.dateTime.extracted.includes(',')) {
+          console.log('Detected comma-separated times in extracted field, parsing as multiple options');
+          const timeStrings = aiAnalysisResult.dateTime.extracted.split(',').map(t => t.trim());
+          console.log('Time strings after split:', timeStrings);
+
+          try {
+            const timeOptions = timeStrings.map((timeStr, index) => {
+              console.log(`Parsing time string ${index + 1}: "${timeStr}"`);
+              const parsedTime = moment.tz(timeStr, 'Asia/Singapore');
+              if (!parsedTime.isValid()) {
+                throw new Error(`Invalid time string: ${timeStr}`);
+              }
+              return {
+                datetime: timeStr,
+                display: `Option ${index + 1}: ${parsedTime.format('dddd, MMMM Do, h:mm A')}`
+              };
+            });
+            console.log(`Successfully parsed ${timeOptions.length} time options from comma-separated string`);
+            return this.handleMultipleTimeProposal(message.from, property, timeOptions, { originalMessage: message });
+          } catch (error) {
+            console.error('Error parsing comma-separated times:', error);
+            // Return error instead of falling through
+            const errorMessage = conversationStateService.generateClarifyDateTimeTemplate();
+            await localMessageService.sendMessage(message.from, errorMessage);
+            conversationStateService.setState(message.from,
+              conversationStateService.constructor.STATES.WAITING_FOR_NEW_TIMING,
+              {
+                propertyId: property._id,
+                needsClarification: true
+              }
+            );
+            return;
+          }
+        }
+      }
+
+      // Only proceed with single-time parsing if we don't have multiple times and it's not a comma-separated string
+      if (aiAnalysisResult.dateTime.extracted &&
+          !(typeof aiAnalysisResult.dateTime.extracted === 'string' && aiAnalysisResult.dateTime.extracted.includes(','))) {
         // Use moment.js to properly handle timezone-aware parsing
         if (aiAnalysisResult.dateTime.extracted.includes('T')) {
           if (aiAnalysisResult.dateTime.extracted.includes('+08:00')) {
@@ -263,14 +350,28 @@ class ViewingService {
       console.log('Handling counter-proposal with suggested time:', aiAnalysis.dateTime.extracted);
 
       // Extract role and property from sender ID
-      const senderInfo = this.parseRoleId(message.from);
+      const senderInfo = await this.parseRoleId(message.from);
       if (!senderInfo || !senderInfo.propertyId) {
         await localMessageService.sendMessage(message.from,
           'Sorry, I cannot identify which property this is for. Please start a new viewing request.');
         return { message: 'Cannot identify property' };
       }
 
-      // Parse the suggested time using the same logic as handleViewingRequest
+      // Get property for context
+      const property = await Property.findById(senderInfo.propertyId);
+      if (!property) {
+        await localMessageService.sendMessage(message.from,
+          'Sorry, I cannot find the property details. Please contact me directly.');
+        return { message: 'Property not found' };
+      }
+
+      // Check if user provided multiple time options for counter-proposal
+      if (aiAnalysis.dateTime.hasMultiple && aiAnalysis.dateTime.options && aiAnalysis.dateTime.options.length > 0) {
+        console.log(`Multiple counter-proposal time options detected: ${aiAnalysis.dateTime.options.length} options`);
+        return this.handleMultipleCounterProposal(message.from, property, aiAnalysis.dateTime.options, originalRequest);
+      }
+
+      // Parse the suggested time using the same logic as handleViewingRequest (single time)
       let suggestedDateTime = null;
       if (aiAnalysis.dateTime.extracted) {
         if (aiAnalysis.dateTime.extracted.includes('T')) {
@@ -411,7 +512,7 @@ class ViewingService {
       }
 
       console.log(`Found viewing request: ${viewingRequest._id}, status: ${viewingRequest.status}`);
-      const senderInfo = this.parseRoleId(message.from);
+      const senderInfo = await this.parseRoleId(message.from);
       const isPartyA = (viewingRequest.requestedBy === 'partyA' && senderInfo.role === viewingRequest.property.partyA.role);
       console.log(`Message from ${message.from}, requestedBy: ${viewingRequest.requestedBy}, isPartyA: ${isPartyA}`);
       console.log(`Not from the original requester`);
@@ -559,7 +660,7 @@ class ViewingService {
       console.log(`Found viewing request with alternative slots: ${viewingRequest._id}, status: ${viewingRequest.status}`);
 
       // Check if this message is from Party A (the original requester) using role IDs
-      const senderInfo = this.parseRoleId(message.from);
+      const senderInfo = await this.parseRoleId(message.from);
       const requesterRole = viewingRequest.requestedBy === 'partyA' ? viewingRequest.property.partyA.role : viewingRequest.property.partyB.role;
       const isPartyA = senderInfo && senderInfo.role === requesterRole;
 
@@ -662,7 +763,7 @@ class ViewingService {
   }
 
   // Helper method to parse role ID (e.g., "buyer-64f1b2c3d4e5f6g7h8i9j0k1")
-  parseRoleId(roleId) {
+  async parseRoleId(roleId) {
     if (roleId === 'agent') {
       return { role: 'agent', propertyId: null };
     }
@@ -673,6 +774,31 @@ class ViewingService {
         role: parts[0],
         propertyId: parts[1]
       };
+    }
+
+    // Fallback for testing scenarios where only role name is provided (e.g., "buyer", "seller")
+    // Find the first property that has this role and use it
+    const Property = require('../models/Property');
+    try {
+      const properties = await Property.find();
+      for (const property of properties) {
+        if (property.partyA && property.partyA.role === roleId) {
+          console.log(`🔄 Fallback: Mapping role '${roleId}' to property ${property._id} (partyA)`);
+          return {
+            role: roleId,
+            propertyId: property._id.toString()
+          };
+        }
+        if (property.partyB && property.partyB.role === roleId) {
+          console.log(`🔄 Fallback: Mapping role '${roleId}' to property ${property._id} (partyB)`);
+          return {
+            role: roleId,
+            propertyId: property._id.toString()
+          };
+        }
+      }
+    } catch (error) {
+      console.error('Error in parseRoleId fallback:', error);
     }
 
     return null;
@@ -738,6 +864,174 @@ class ViewingService {
     return 'partyA';
   }
 
+  // Handle initial viewing request with multiple time options
+  async handleMultipleTimeProposal(sender, property, timeOptions, originalRequestData) {
+    try {
+      console.log(`Processing multiple time proposal from ${sender} with ${timeOptions.length} options`);
+
+      // Determine who the other party is
+      const senderInfo = await this.parseRoleId(sender);
+      const otherPartyRoleId = this.getOtherPartyRoleId(property, senderInfo.role, property._id);
+      const otherParty = senderInfo.role === property.partyA.role ? property.partyB : property.partyA;
+      const senderName = senderInfo.role === property.partyA.role ? property.partyA.name : property.partyB.name;
+
+      // Check calendar availability for each time option and filter out conflicts
+      const availableTimeOptions = [];
+      console.log('Checking calendar availability for time options...');
+
+      for (const timeOption of timeOptions) {
+        try {
+          const datetime = new Date(timeOption.datetime);
+          const isAvailable = await calendarService.checkAvailability(datetime);
+
+          if (isAvailable) {
+            availableTimeOptions.push(timeOption);
+            console.log(`✓ Time slot available: ${timeOption.display}`);
+          } else {
+            console.log(`✗ Time slot unavailable (conflict): ${timeOption.display}`);
+          }
+        } catch (error) {
+          console.error(`Error checking availability for ${timeOption.display}:`, error);
+          // If calendar check fails, assume unavailable for safety
+          console.log(`✗ Time slot marked unavailable due to error: ${timeOption.display}`);
+        }
+      }
+
+      // If no times are available, suggest alternative times
+      if (availableTimeOptions.length === 0) {
+        console.log('No proposed times are available, finding alternative slots...');
+
+        // Try to find alternative available slots
+        const firstProposedTime = new Date(timeOptions[0].datetime);
+        const alternativeSlots = await calendarService.findMultipleAvailableSlots(firstProposedTime, 3);
+
+        if (alternativeSlots.length > 0) {
+          // Convert alternative slots to the expected format
+          alternativeSlots.forEach((slot, index) => {
+            availableTimeOptions.push({
+              datetime: slot.toISOString(),
+              display: `Alternative ${index + 1}: ${moment.tz(slot, 'Asia/Singapore').format('dddd, MMMM Do, h:mm A')}`
+            });
+          });
+
+          // Send message about conflicts and alternatives
+          const conflictMessage = `I'm sorry, but the times you proposed (${timeOptions.map(t => t.display).join(', ')}) are not available due to schedule conflicts. Here are some alternative times that work:`;
+          await localMessageService.sendMessage(sender, conflictMessage);
+        } else {
+          // No alternatives found
+          const noAvailabilityMessage = `I'm sorry, but the times you proposed are not available due to schedule conflicts, and I couldn't find suitable alternatives. Please propose different times or contact me directly to discuss scheduling.`;
+          await localMessageService.sendMessage(sender, noAvailabilityMessage);
+          return;
+        }
+      } else if (availableTimeOptions.length < timeOptions.length) {
+        // Some times were filtered out due to conflicts - inform buyer about specific conflicts
+        const conflictedTimes = timeOptions.filter(original =>
+          !availableTimeOptions.some(available => available.datetime === original.datetime)
+        );
+        console.log(`Filtered out ${conflictedTimes.length} conflicting time(s): ${conflictedTimes.map(t => t.display).join(', ')}`);
+
+        // Send message to buyer about specific conflicts
+        const conflictMessage = `I have an existing appointment at ${conflictedTimes.map(t => t.display).join(' and ')}, but I'm forwarding your other time options (${availableTimeOptions.map(t => t.display).join(', ')}) to the ${senderInfo.role === 'buyer' ? 'seller' : 'landlord'} for their selection.`;
+        await localMessageService.sendMessage(sender, conflictMessage);
+      }
+
+      console.log(`Proceeding with ${availableTimeOptions.length} available time options`);
+
+      // Send multiple time proposal to other party with A/B/C/D/E/F options
+      const multipleTimeMessage = conversationStateService.generateMultipleTimeProposalTemplate(
+        property.address,
+        availableTimeOptions
+      );
+
+      const confirmationMessage = conversationStateService.generateRequestForwardedTemplate(
+        otherParty.name,
+        `multiple time options`,
+        senderInfo.role
+      );
+
+      await localMessageService.sendMessage(otherPartyRoleId, multipleTimeMessage);
+      await localMessageService.sendMessage(sender, confirmationMessage);
+
+      // Set conversation state for the other party - waiting for selection from multiple options
+      conversationStateService.setState(otherPartyRoleId,
+        conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+        {
+          propertyId: property._id,
+          multipleTimeOptions: availableTimeOptions,
+          requesterName: senderName,
+          originalRequestData: originalRequestData
+        }
+      );
+
+      // Set sender state to completed (they've done their part)
+      conversationStateService.setState(sender, conversationStateService.constructor.STATES.COMPLETED, {
+        proposalAttempts: originalRequestData?.proposalAttempts || 0
+      });
+
+      return { success: true, message: 'Multiple time options forwarded to other party' };
+
+    } catch (error) {
+      console.error('Error handling multiple time proposal:', error);
+      await localMessageService.sendMessage(sender,
+        'Sorry, there was an error processing your time options. Please try again.');
+      return { success: false, message: 'Error processing multiple time proposal' };
+    }
+  }
+
+  // Handle counter-proposal with multiple time options
+  async handleMultipleCounterProposal(sender, property, timeOptions, originalRequest) {
+    try {
+      console.log(`Processing multiple counter-proposal from ${sender} with ${timeOptions.length} options`);
+
+      // Determine who the other party is
+      const senderInfo = await this.parseRoleId(sender);
+      const otherPartyRoleId = this.getOtherPartyRoleId(property, senderInfo.role, property._id);
+      const otherParty = senderInfo.role === property.partyA.role ? property.partyB : property.partyA;
+      const senderName = senderInfo.role === property.partyA.role ? property.partyA.name : property.partyB.name;
+
+      // Send multiple counter-proposal to other party with A/B/C/D/E/F options
+      const multipleCounterMessage = conversationStateService.generateMultipleCounterProposalTemplate(
+        senderName,
+        property.address,
+        timeOptions
+      );
+
+      const confirmationMessage = conversationStateService.generateRequestForwardedTemplate(
+        otherParty.name,
+        `alternative time options`,
+        senderInfo.role
+      );
+
+      await localMessageService.sendMessage(otherPartyRoleId, multipleCounterMessage);
+      await localMessageService.sendMessage(sender, confirmationMessage);
+
+      // Set conversation state for the other party - waiting for selection from multiple options
+      conversationStateService.setState(otherPartyRoleId,
+        conversationStateService.constructor.STATES.WAITING_FOR_CONFIRMATION,
+        {
+          propertyId: property._id,
+          multipleTimeOptions: timeOptions,
+          requesterName: senderName,
+          originalRequestData: { originalRequest, counterProposal: true },
+          isCounterProposal: true
+        }
+      );
+
+      // Set sender state to completed (they've done their part)
+      conversationStateService.setState(sender, conversationStateService.constructor.STATES.COMPLETED, {
+        proposalAttempts: originalRequest?.proposalAttempts || 0
+      });
+
+      return { success: true, message: 'Multiple counter-proposal options forwarded to other party' };
+
+    } catch (error) {
+      console.error('Error handling multiple counter-proposal:', error);
+      await localMessageService.sendMessage(sender,
+        'Sorry, there was an error processing your counter-proposal options. Please try again.');
+      return { success: false, message: 'Error processing multiple counter-proposal' };
+    }
+  }
+
   // Complete viewing confirmation when final party confirms
   async completeViewingConfirmation(confirmingUserId, confirmedDateTime, propertyId, viewingData) {
     try {
@@ -751,7 +1045,7 @@ class ViewingService {
       }
 
       // Determine who confirmed and who needs to be notified
-      const confirmingUserInfo = this.parseRoleId(confirmingUserId);
+      const confirmingUserInfo = await this.parseRoleId(confirmingUserId);
       const otherPartyRoleId = this.getOtherPartyRoleId(property, confirmingUserInfo.role, propertyId);
 
       const confirmingParty = confirmingUserInfo.role === property.partyA.role ? property.partyA : property.partyB;
